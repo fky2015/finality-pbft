@@ -40,6 +40,35 @@ pub struct VoterSet<Id: Eq + Ord> {
 	total_weight: VoterWeight,
 }
 
+/// A message to emit current view state.
+///
+/// Currently, view_number is equal to round_number.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ViewChange<N> {
+    /// The view saw by current node.
+	pub view_number: N,
+    /// WARNING: This is ignored for know.
+	pub active: bool,
+}
+
+impl<N> ViewChange<N> {
+    /// Notify active.
+	pub fn active(view_number: N) -> Self {
+		ViewChange { view_number, active: true }
+	}
+
+    /// Notify inactive.
+	pub fn inactive(view_number: N) -> Self {
+		ViewChange { view_number, active: false }
+	}
+}
+
+impl<N> From<N> for ViewChange<N> {
+	fn from(v: N) -> Self {
+		ViewChange::active(v)
+	}
+}
+
 impl<Id: Eq + Ord> VoterSet<Id> {
 	/// Create a voter set from a weight distribution produced by the given iterator.
 	///
@@ -70,20 +99,20 @@ impl<Id: Eq + Ord> VoterSet<Id> {
 							position: 0, // The total order is determined afterwards.
 							weight: VoterWeight(w),
 						});
-					},
+					}
 					Entry::Occupied(mut e) => {
 						let v = e.get_mut();
 						let n = v.weight.get() + weight;
 						let w = NonZeroU64::new(n).expect("nonzero + nonzero is nonzero");
 						v.weight = VoterWeight(w);
-					},
+					}
 				}
 			}
 		}
 
 		if voters.is_empty() {
 			// No non-zero weights; the set would be empty.
-			return None
+			return None;
 		}
 
 		let voters = voters
@@ -201,7 +230,7 @@ mod tests {
 				//
 				// the easiest thing to do is to just retry generating another instance.
 				if let Some(set) = VoterSet::new(ids.into_iter().zip(weights)) {
-					break set
+					break set;
 				}
 			}
 		}
@@ -234,7 +263,7 @@ mod tests {
 
 			// this validator set is invalid
 			if total_weight > u64::max_value() as u128 {
-				return
+				return;
 			}
 
 			let expected = VoterWeight::new(total_weight as u64);
