@@ -243,6 +243,7 @@ pub enum CurrentState {
 #[derive(Debug)]
 struct Storage<N, H, ID> {
 	preprepare_hash: Option<H>,
+	preprepare: HashMap<ID, ()>,
 	prepare: HashMap<ID, Message<N, H>>,
 	commit: HashMap<ID, Message<N, H>>,
 }
@@ -254,11 +255,18 @@ where
 	N: std::fmt::Debug,
 {
 	fn new() -> Self {
-		Self { preprepare_hash: None, prepare: Default::default(), commit: Default::default() }
+		Self {
+			preprepare_hash: None,
+			preprepare: Default::default(),
+			prepare: Default::default(),
+			commit: Default::default(),
+		}
 	}
 
 	fn contains_key(&self, key: &ID) -> bool {
-		self.prepare.contains_key(key) || self.commit.contains_key(key)
+		self.preprepare.contains_key(key)
+			|| self.prepare.contains_key(key)
+			|| self.commit.contains_key(key)
 	}
 }
 
@@ -278,6 +286,10 @@ where
 			msg @ Message::Commit { .. } => {
 				log::trace!("insert message to Commit, msg: {:?}", msg);
 				self.commit.insert(from, msg);
+			},
+			Message::EmptyPrePrepare => {
+				log::trace!("insert message to preprepare, msg: EmptyPrePrepare");
+				self.preprepare.insert(from, ());
 			},
 		}
 	}
@@ -656,7 +668,7 @@ where
 			// The only way to determine primary fail is to
 			// check last view round message to see if primary send
 			// anything.
-			self.multicast(Message::EmptyPrePrepare).await;
+			self.multicast(Message::EmptyPrePrepare).await?;
 		}
 
 		Delay::new(Duration::from_millis(DELAY_PRE_PREPARE_MILLI)).await;
@@ -864,7 +876,7 @@ mod tests {
 						// broadcast to all peer (TODO: including itself?)
 						for sender in &self.senders {
 							// log::trace!("route: tx.isclosed? {}", sender.is_closed());
-							let res = sender.unbounded_send(msg.clone());
+							let _res = sender.unbounded_send(msg.clone());
 							// log::trace!("res: {:?}", res);
 						}
 					},
