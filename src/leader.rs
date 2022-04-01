@@ -176,7 +176,9 @@ pub mod env {
 /// V: view number
 /// N: sequence number
 /// D: Digest of the block, that is header
-#[derive(Debug, Clone)]
+#[derive(Clone)]
+#[cfg_attr(any(feature = "std", test), derive(Debug))]
+#[cfg_attr(feature = "derive-codec", derive(Encode, Decode, TypeInfo))]
 pub enum Message<N, D> {
 	/// A message to be sent to the network by primary alive but not yet haprimary alive but not
 	/// yet have a new block to make consensus.
@@ -187,7 +189,9 @@ pub enum Message<N, D> {
 	Commit { view: u64, seq_number: N },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
+#[cfg_attr(any(feature = "std", test), derive(Debug))]
+#[cfg_attr(feature = "derive-codec", derive(Encode, Decode, TypeInfo))]
 pub enum GlobalMessage<ID> {
 	/// multicast <view + 1, latest stable checkpoint, C: a set of pairs with the sequence number
 	/// and digest of each checkpoint, P, Q, i>
@@ -428,6 +432,7 @@ where
 		inner_incoming: &mut E::In,
 		inner: &mut ViewRound<E>,
 	) -> Result<(), E::Error> {
+        // FIXME: optimize
 		log::trace!("{:?} process_voting_round {:?}", inner.id, inner.view);
 		let a = ViewRound::<E>::process_incoming(inner_incoming, inner.message_log.clone()).fuse();
 		let b = inner.progress().fuse();
@@ -445,40 +450,6 @@ where
 			}
 		}
 	}
-
-	// pub async fn process_global_incoming(&mut self) -> Result<(), E::Error> {
-	// 	const DELAY_VIEW_CHANGE_WAIT: u64 = 1000;
-	// 	let mut log = HashMap::<E::ID, GlobalMessage<E::ID>>::new();
-	//
-	// 	let timer = Delay::new(Duration::from_millis(DELAY_VIEW_CHANGE_WAIT)).fuse();
-	//
-	// 	futures::pin_mut!(timer);
-	//
-	// 	// TODO: test this
-	// 	loop {
-	// 		let msg_fuse = self.global_incoming.try_next().fuse();
-	// 		futures::pin_mut!(msg_fuse);
-	//
-	// 		futures::select! {
-	// 			_ = timer =>{
-	// 				break;
-	// 			}
-	// 			msg_fuse = msg_fuse => {
-	// 				while let Some(msg) = msg_fuse.clone()? {
-	// 					let GlobalMessage::ViewChange { new_view, id } = msg.clone();
-	// 					// validate incoming view change
-	// 					if self.current_view_number + 1 == new_view {
-	// 						log::trace!("{:?} save valid viewChange {:?}", self.local_id, msg);
-	// 							log.insert(id, msg);
-	// 					}
-	//
-	// 				}
-	// 			}
-	// 		}
-	// 	}
-	//
-	// 	Ok(())
-	// }
 
 	pub async fn change_view(
 		current_view: u64,
@@ -625,6 +596,7 @@ where
 		incoming: &mut E::In,
 		log: Arc<Mutex<Storage<E::Number, E::Hash, E::ID>>>,
 	) -> Result<(), E::Error> {
+        // FIXME: optimize
 		log::trace!("start of process_incoming");
 		while let Some(msg) = incoming.try_next().await? {
 			log::trace!("process_incoming: {:?}", msg);
