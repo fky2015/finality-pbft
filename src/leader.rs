@@ -6,7 +6,11 @@
 use env::Environment;
 use futures::{FutureExt, Sink, SinkExt, Stream, TryStreamExt};
 use futures_timer::Delay;
+#[cfg(feature = "derive-codec")]
+use parity_scale_codec::{Decode, Encode};
 use parking_lot::Mutex;
+#[cfg(feature = "derive-codec")]
+use scale_info::TypeInfo;
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 /// Error for PBFT consensus.
@@ -432,7 +436,7 @@ where
 		inner_incoming: &mut E::In,
 		inner: &mut ViewRound<E>,
 	) -> Result<(), E::Error> {
-        // FIXME: optimize
+		// FIXME: optimize
 		log::trace!("{:?} process_voting_round {:?}", inner.id, inner.view);
 		let a = ViewRound::<E>::process_incoming(inner_incoming, inner.message_log.clone()).fuse();
 		let b = inner.progress().fuse();
@@ -596,7 +600,7 @@ where
 		incoming: &mut E::In,
 		log: Arc<Mutex<Storage<E::Number, E::Hash, E::ID>>>,
 	) -> Result<(), E::Error> {
-        // FIXME: optimize
+		// FIXME: optimize
 		log::trace!("start of process_incoming");
 		while let Some(msg) = incoming.try_next().await? {
 			log::trace!("process_incoming: {:?}", msg);
@@ -1015,6 +1019,7 @@ mod tests {
 		parent: Hash,
 	}
 
+	#[derive(Debug)]
 	struct DummyChain {
 		inner: BTreeMap<Hash, BlockRecord>,
 		finalized: (Hash, BlockNumber),
@@ -1165,7 +1170,15 @@ mod tests {
 		}
 
 		fn preprepare(&self, _view: u64) -> Option<(Self::Hash, Self::Number)> {
-			Some(self.with_chain(|chain| chain.next_to_be_finalized().unwrap()))
+			self.with_chain(|chain| {
+				log::info!(
+					"chain: {:?}, last_finalized: {:?}, next_to_be_finalized: {:?}",
+					chain,
+					chain.last_finalized(),
+					chain.next_to_be_finalized()
+				);
+				chain.next_to_be_finalized().ok()
+			})
 		}
 	}
 
@@ -1204,7 +1217,7 @@ mod tests {
 	// communication test
 	#[test]
 	fn talking_to_myself() {
-		simple_logger::init_with_level(log::Level::Trace).unwrap();
+		let _ = simple_logger::init_with_level(log::Level::Info);
 
 		let local_id = 5;
 		let voter_set = VoterSet::new(vec![5]);
@@ -1217,6 +1230,12 @@ mod tests {
 		// init chain
 		let last_finalized = env.with_chain(|chain| {
 			chain.push_blocks(GENESIS_HASH, &["A", "B", "C", "D", "E"]);
+			log::info!(
+				"chain: {:?}, last_finalized: {:?}, next_to_be_finalized: {:?}",
+				chain,
+				chain.last_finalized(),
+				chain.next_to_be_finalized()
+			);
 			chain.last_finalized()
 		});
 
@@ -1238,11 +1257,11 @@ mod tests {
 		pool.run_until(
 			finalized
 				.take_while(|&(_, n)| {
-					log::trace!("n: {}", n);
+					log::info!("n: {}", n);
 					futures::future::ready(n < 6)
 				})
 				.for_each(|v| {
-					log::trace!("v: {:?}", v);
+					log::info!("v: {:?}", v);
 					futures::future::ready(())
 				}),
 		)
