@@ -35,6 +35,30 @@ impl std::fmt::Display for Error {
 	}
 }
 
+pub mod view_round {
+
+	/// State of the round.
+	#[derive(PartialEq, Clone)]
+	#[cfg_attr(any(feature = "std", test), derive(Debug))]
+	#[cfg_attr(feature = "derive-codec", derive(Encode, Decode, scale_info::TypeInfo))]
+	pub struct State<H, N> {
+		/// The finalized block.
+		pub finalized: Option<(H, N)>,
+		/// Whether the view is completable.
+		pub completable: bool,
+	}
+
+	impl<H: Clone, N: Clone> State<H, N> {
+		/// Genesis state.
+		pub fn genesis(genesis: (H, N)) -> Self {
+			State {
+				finalized: Some(genesis.clone()),
+				completable: true,
+			}
+		}
+	}
+}
+
 impl std::error::Error for Error {}
 
 pub(crate) mod helper {
@@ -248,6 +272,7 @@ pub enum CurrentState {
 // 	fn count_commit(&self, hash: H) -> bool;
 // }
 
+/// similar to: [`round::Round`]
 #[derive(Debug)]
 struct Storage<N, H, ID> {
 	preprepare_hash: Option<H>,
@@ -551,6 +576,7 @@ where
 }
 
 /// Logic for a voter on a specific round.
+/// Similar to [`voting_round::VotingRound`]
 pub struct ViewRound<E: Environment> {
 	env: Arc<E>,
 	voter_set: VoterSet<E::ID>,
