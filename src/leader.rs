@@ -22,6 +22,48 @@ pub enum Error {
 	PrimaryFailure,
 }
 
+pub mod voter {
+	/// Trait for querying the state of the voter. Used by `Voter` to return a queryable object
+	/// without exposing too many data types.
+	pub trait VoterState<Hash, Id: Eq + std::hash::Hash> {
+		/// Returns a plain data type, `report::VoterState`, describing the current state
+		/// of the voter relevant to the voting process.
+		fn get(&self) -> report::VoterState<Hash, Id>;
+	}
+
+	pub mod report {
+		use super::super::CurrentState;
+		use std::collections::{HashMap, HashSet};
+
+		#[derive(Clone, Debug)]
+		pub struct ViewState<Hash, ID> {
+			pub state: CurrentState,
+			pub total_number: usize,
+			pub threshold: usize,
+			pub preprepare_hash: Option<Hash>,
+			pub prepare_count: usize,
+			/// The identities of nodes that have cast prepare so far.
+			pub prepare_ids: HashSet<ID>,
+			pub commit_count: usize,
+			pub commit_ids: HashSet<ID>,
+		}
+
+		#[derive(Clone, Debug)]
+		pub struct VoterState<Hash, Id> {
+			/// Voting rounds running in the background.
+			pub background_views: HashMap<u64, ViewState<Hash, Id>>,
+			/// The current best voting view.
+			pub best_view: (u64, ViewState<Hash, Id>),
+		}
+
+		#[derive(Clone, Debug)]
+		pub struct Log<Hash, ID> {
+			pub id: ID,
+			pub state: ViewState<Hash, ID>,
+		}
+	}
+}
+
 impl std::fmt::Display for Error {
 	fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
 		match *self {
@@ -51,10 +93,7 @@ pub mod view_round {
 	impl<H: Clone, N: Clone> State<H, N> {
 		/// Genesis state.
 		pub fn genesis(genesis: (H, N)) -> Self {
-			State {
-				finalized: Some(genesis.clone()),
-				completable: true,
-			}
+			State { finalized: Some(genesis.clone()), completable: true }
 		}
 	}
 }
@@ -91,30 +130,6 @@ pub mod communicate {
 		pub outgoing: Output,
 		// Output state log
 		// pub log_sender: LogOutput,
-	}
-}
-
-pub mod report {
-	use super::CurrentState;
-	use std::collections::HashSet;
-
-	#[derive(Clone, Debug)]
-	pub struct ViewState<Hash, ID> {
-		pub state: CurrentState,
-		pub total_number: usize,
-		pub threshold: usize,
-		pub preprepare_hash: Option<Hash>,
-		pub prepare_count: usize,
-		/// The identities of nodes that have cast prepare so far.
-		pub prepare_ids: HashSet<ID>,
-		pub commit_count: usize,
-		pub commit_ids: HashSet<ID>,
-	}
-
-	#[derive(Clone, Debug)]
-	pub struct Log<Hash, ID> {
-		pub id: ID,
-		pub state: ViewState<Hash, ID>,
 	}
 }
 
@@ -184,7 +199,7 @@ pub mod env {
 	where
 		E: Environment,
 	{
-		storage: Mutex<HashMap<E::ID, Vec<super::report::ViewState<E::Hash, E::ID>>>>,
+		storage: Mutex<HashMap<E::ID, Vec<super::voter::report::ViewState<E::Hash, E::ID>>>>,
 	}
 
 	impl<E> Logger<E>
@@ -194,14 +209,13 @@ pub mod env {
 		pub fn push_view_state(
 			&mut self,
 			id: E::ID,
-			state: super::report::ViewState<E::Hash, E::ID>,
+			state: super::voter::report::ViewState<E::Hash, E::ID>,
 		) {
 			self.storage.lock().entry(id).or_insert(Vec::new()).push(state);
 		}
 	}
 }
 
-/// V: view number
 /// N: sequence number
 /// D: Digest of the block, that is header
 #[derive(Clone)]
