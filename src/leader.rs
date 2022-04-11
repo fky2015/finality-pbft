@@ -78,6 +78,10 @@ impl std::fmt::Display for Error {
 }
 
 pub mod view_round {
+	#[cfg(feature = "derive-codec")]
+	use parity_scale_codec::{Decode, Encode};
+	#[cfg(feature = "derive-codec")]
+	use scale_info::TypeInfo;
 
 	/// State of the round.
 	#[derive(PartialEq, Clone)]
