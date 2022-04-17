@@ -8,9 +8,9 @@ pub(crate) mod helper {
 }
 
 pub struct Voter<E: Environment, GlobalIn, GlobalOut> {
-	local_id: E::ID,
+	local_id: E::Id,
 	env: Arc<E>,
-	voters: VoterSet<E::ID>,
+	voters: VoterSet<E::Id>,
 	global_incoming: GlobalIn,
 	global_outgoing: GlobalOut,
 	// TODO: consider wrap this around sth.
@@ -21,12 +21,12 @@ pub struct Voter<E: Environment, GlobalIn, GlobalOut> {
 
 impl<E: Environment, GlobalIn, GlobalOut> Voter<E, GlobalIn, GlobalOut>
 where
-	GlobalIn: Stream<Item = Result<GlobalMessage<E::ID>, E::Error>> + Unpin,
-	GlobalOut: Sink<GlobalMessage<E::ID>, Error = E::Error> + Unpin,
+	GlobalIn: Stream<Item = Result<GlobalMessage<E::Id>, E::Error>> + Unpin,
+	GlobalOut: Sink<GlobalMessage<E::Id>, Error = E::Error> + Unpin,
 {
 	pub fn new(
 		env: Arc<E>,
-		voters: VoterSet<E::ID>,
+		voters: VoterSet<E::Id>,
 		global_comms: (GlobalIn, GlobalOut),
 		current_view_number: u64,
 		last_round_base: (E::Hash, E::Number),
@@ -85,10 +85,10 @@ where
 
 	pub async fn change_view(
 		current_view: u64,
-		id: E::ID,
+		id: E::Id,
 		global_outgoing: &mut GlobalOut,
 		global_incoming: &mut GlobalIn,
-		voters: &VoterSet<E::ID>,
+		voters: &VoterSet<E::Id>,
 	) -> Result<u64, E::Error> {
 		const DELAY_VIEW_CHANGE_WAIT: u64 = 1000;
 		let mut new_view = current_view + 1;
@@ -96,7 +96,7 @@ where
 			log::info!("id: {:?}, start view_change: {new_view}", id);
 			// create new view change message
 			let view_change = GlobalMessage::ViewChange { new_view, id: id.clone() };
-			let mut log = HashMap::<E::ID, GlobalMessage<E::ID>>::new();
+			let mut log = HashMap::<E::Id, GlobalMessage<E::Id>>::new();
 
 			global_outgoing.send(view_change.clone()).await?;
 
@@ -188,15 +188,15 @@ pub trait VoterState<Hash, Id: Eq + std::hash::Hash> {
 /// Communication helper data
 pub mod communicate {
 	/// Data necessary to create a voter.
-	pub struct VoterData<ID> {
+	pub struct VoterData<Id> {
 		/// Local voter id.
-		pub local_id: ID,
+		pub local_id: Id,
 	}
 
 	/// Data necessary to participate in a round.
-	pub struct RoundData<ID, Timer, Input, Output> {
+	pub struct RoundData<Id, Timer, Input, Output> {
 		/// Local voter id
-		pub voter_id: ID,
+		pub voter_id: Id,
 		/// Timer before prevotes can be cast. This should be Start + 2T
 		/// where T is the gossip time estimate.
 		pub prevote_timer: Timer,
@@ -216,16 +216,16 @@ pub mod report {
 	use std::collections::{HashMap, HashSet};
 
 	#[derive(Clone, Debug)]
-	pub struct ViewState<Hash, ID> {
+	pub struct ViewState<Hash, Id> {
 		pub state: CurrentState,
 		pub total_number: usize,
 		pub threshold: usize,
 		pub preprepare_hash: Option<Hash>,
 		pub prepare_count: usize,
 		/// The identities of nodes that have cast prepare so far.
-		pub prepare_ids: HashSet<ID>,
+		pub prepare_ids: HashSet<Id>,
 		pub commit_count: usize,
-		pub commit_ids: HashSet<ID>,
+		pub commit_ids: HashSet<Id>,
 	}
 
 	#[derive(Clone, Debug)]
@@ -237,9 +237,9 @@ pub mod report {
 	}
 
 	#[derive(Clone, Debug)]
-	pub struct Log<Hash, ID> {
-		pub id: ID,
-		pub state: ViewState<Hash, ID>,
+	pub struct Log<Hash, Id> {
+		pub id: Id,
+		pub state: ViewState<Hash, Id>,
 	}
 }
 
@@ -263,14 +263,14 @@ pub trait Environment {
 	/// Associated timer type for the environment. See also [`Self::round_data`] and
 	/// [`Self::round_commit_timer`].
 	type Timer: Future<Output = Result<(), Self::Error>> + Unpin;
-	/// The associated ID for the Environment.
-	type ID: Clone + Eq + std::hash::Hash + Ord + std::fmt::Debug;
+	/// The associated Id for the Environment.
+	type Id: Clone + Eq + std::hash::Hash + Ord + std::fmt::Debug;
 	/// The associated Signature type for the Environment.
 	type Signature: Eq + Clone + core::fmt::Debug;
 	/// The input stream used to communicate with the outside world.
 	type In: Stream<
 			Item = Result<
-				SignedMessage<Self::Number, Self::Hash, Self::Signature, Self::ID>,
+				SignedMessage<Self::Number, Self::Hash, Self::Signature, Self::Id>,
 				Self::Error,
 			>,
 		> + Unpin;
@@ -284,13 +284,13 @@ pub trait Environment {
 	type Number: BlockNumberOps;
 
 	/// Get Voter data.
-	fn voter_data(&self) -> communicate::VoterData<Self::ID>;
+	fn voter_data(&self) -> communicate::VoterData<Self::Id>;
 
 	/// Get round data.
 	fn round_data(
 		&self,
 		view: u64,
-	) -> communicate::RoundData<Self::ID, Self::Timer, Self::In, Self::Out>;
+	) -> communicate::RoundData<Self::Id, Self::Timer, Self::In, Self::Out>;
 
 	/// preprepare
 	fn preprepare(&self, view: u64) -> Option<(Self::Hash, Self::Number)>;
@@ -309,14 +309,14 @@ pub struct Logger<E>
 where
 	E: Environment,
 {
-	storage: Mutex<HashMap<E::ID, Vec<report::ViewState<E::Hash, E::ID>>>>,
+	storage: Mutex<HashMap<E::Id, Vec<report::ViewState<E::Hash, E::Id>>>>,
 }
 
 impl<E> Logger<E>
 where
 	E: Environment,
 {
-	pub fn push_view_state(&mut self, id: E::ID, state: report::ViewState<E::Hash, E::ID>) {
+	pub fn push_view_state(&mut self, id: E::Id, state: report::ViewState<E::Hash, E::Id>) {
 		self.storage.lock().entry(id).or_insert(Vec::new()).push(state);
 	}
 }
@@ -325,12 +325,12 @@ where
 /// Similar to [`voting_round::VotingRound`]
 pub struct ViewRound<E: Environment> {
 	env: Arc<E>,
-	voter_set: VoterSet<E::ID>,
+	voter_set: VoterSet<E::Id>,
 	current_state: CurrentState,
-	message_log: Arc<Mutex<Storage<E::Number, E::Hash, E::ID>>>,
+	message_log: Arc<Mutex<Storage<E::Number, E::Hash, E::Id>>>,
 	view: u64,
 	current_height: E::Number,
-	id: E::ID,
+	id: E::Id,
 	// incoming: E::In,
 	outgoing: E::Out,
 }
@@ -344,9 +344,9 @@ where
 		view: u64,
 		current_height: E::Number,
 		// preprepare_hash: H,
-		voter_set: VoterSet<E::ID>,
+		voter_set: VoterSet<E::Id>,
 		env: Arc<E>,
-		voter_id: E::ID,
+		voter_id: E::Id,
 		outgoing: E::Out,
 	) -> Self {
 		ViewRound {
@@ -370,7 +370,7 @@ where
 
 	async fn process_incoming(
 		incoming: &mut E::In,
-		log: Arc<Mutex<Storage<E::Number, E::Hash, E::ID>>>,
+		log: Arc<Mutex<Storage<E::Number, E::Hash, E::Id>>>,
 	) -> Result<(), E::Error> {
 		// FIXME: optimize
 		log::trace!("start of process_incoming");

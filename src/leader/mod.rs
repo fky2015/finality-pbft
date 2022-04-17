@@ -113,12 +113,12 @@ pub enum Message<N, D> {
 #[derive(Clone)]
 #[cfg_attr(any(feature = "std", test), derive(Debug))]
 #[cfg_attr(feature = "derive-codec", derive(Encode, Decode, TypeInfo))]
-pub enum GlobalMessage<ID> {
+pub enum GlobalMessage<Id> {
 	/// multicast <view + 1, latest stable checkpoint, C: a set of pairs with the sequence number
 	/// and digest of each checkpoint, P, Q, i>
 	ViewChange {
 		new_view: u64,
-		id: ID,
+		id: Id,
 		// latest_checkpoint: u64,
 		// checkpoints: Vec<(u64, D)>,
 	},
@@ -143,8 +143,8 @@ pub enum GlobalMessage<ID> {
 
 #[cfg_attr(any(feature = "std", test), derive(Debug))]
 #[derive(Clone)]
-pub struct SignedMessage<N, H, Signature, ID> {
-	from: ID,
+pub struct SignedMessage<N, H, Signature, Id> {
+	from: Id,
 	message: Message<N, H>,
 	signature: Signature,
 }
@@ -169,16 +169,16 @@ pub enum CurrentState {
 
 /// similar to: [`round::Round`]
 #[cfg_attr(any(feature = "std", test), derive(Debug))]
-struct Storage<N, H, ID> {
+struct Storage<N, H, Id> {
 	preprepare_hash: Option<H>,
-	preprepare: BTreeMap<ID, ()>,
-	prepare: BTreeMap<ID, Message<N, H>>,
-	commit: BTreeMap<ID, Message<N, H>>,
+	preprepare: BTreeMap<Id, ()>,
+	prepare: BTreeMap<Id, Message<N, H>>,
+	commit: BTreeMap<Id, Message<N, H>>,
 }
 
-impl<N, H, ID> Storage<N, H, ID>
+impl<N, H, Id> Storage<N, H, Id>
 where
-	ID: Clone + Eq + std::hash::Hash + Ord + std::fmt::Debug,
+	Id: Clone + Eq + std::hash::Hash + Ord + std::fmt::Debug,
 	H: std::fmt::Debug,
 	N: std::fmt::Debug,
 {
@@ -191,20 +191,20 @@ where
 		}
 	}
 
-	fn contains_key(&self, key: &ID) -> bool {
+	fn contains_key(&self, key: &Id) -> bool {
 		self.preprepare.contains_key(key)
 			|| self.prepare.contains_key(key)
 			|| self.commit.contains_key(key)
 	}
 }
 
-impl<N, H, ID: Eq + Ord + std::hash::Hash> Storage<N, H, ID>
+impl<N, H, Id: Eq + Ord + std::hash::Hash> Storage<N, H, Id>
 where
-	ID: std::fmt::Debug,
+	Id: std::fmt::Debug,
 	H: std::fmt::Debug,
 	N: std::fmt::Debug,
 {
-	fn save_message(&mut self, from: ID, message: Message<N, H>) {
+	fn save_message(&mut self, from: Id, message: Message<N, H>) {
 		#[cfg(feature = "std")]
 		log::trace!("insert message to Storage, from: {:?}", from);
 		match message {
@@ -248,24 +248,24 @@ where
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub struct VoterSet<ID: Eq + Ord> {
-	voters: Vec<ID>,
+pub struct VoterSet<Id: Eq + Ord> {
+	voters: Vec<Id>,
 	/// The required number threshould for supermajority.
 	/// Normally, it's > 2/3.
 	threshould: usize,
 }
 
-impl<ID: Eq + Ord + Clone> VoterSet<ID> {
-	pub fn new(voters: Vec<ID>) -> Self {
+impl<Id: Eq + Ord + Clone> VoterSet<Id> {
+	pub fn new(voters: Vec<Id>) -> Self {
 		let len = voters.len() / 3 + 1;
 		Self { voters, threshould: len }
 	}
 
-	pub fn add(&mut self, id: ID) {
+	pub fn add(&mut self, id: Id) {
 		self.voters.push(id);
 	}
 
-	pub fn remove(&mut self, id: &ID) {
+	pub fn remove(&mut self, id: &Id) {
 		self.voters.retain(|x| x != id);
 	}
 
@@ -277,7 +277,7 @@ impl<ID: Eq + Ord + Clone> VoterSet<ID> {
 		self.voters.len() >= self.threshould
 	}
 
-	pub fn is_member(&self, id: &ID) -> bool {
+	pub fn is_member(&self, id: &Id) -> bool {
 		self.voters.contains(id)
 	}
 
@@ -289,11 +289,11 @@ impl<ID: Eq + Ord + Clone> VoterSet<ID> {
 		self.threshould
 	}
 
-	pub fn voters(&self) -> &[ID] {
+	pub fn voters(&self) -> &[Id] {
 		&self.voters
 	}
 
-	pub fn get_primary(&self, view: u64) -> ID {
+	pub fn get_primary(&self, view: u64) -> Id {
 		self.voters.get(view as usize % self.voters.len()).cloned().unwrap()
 	}
 }

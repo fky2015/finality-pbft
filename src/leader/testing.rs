@@ -1,4 +1,4 @@
-type ID = u64;
+type Id = u64;
 type Signature = u64;
 type Hash = &'static str;
 type BlockNumber = u64;
@@ -220,9 +220,9 @@ pub mod environment {
 		}
 	}
 
-	// type LogNetwork = CollectorNetwork<report::Log<&'static str, ID>>;
-	type RoundNetwork = BroadcastNetwork<SignedMessage<u64, &'static str, Signature, ID>>;
-	type GlobalMessageNetwork = BroadcastNetwork<GlobalMessage<ID>>;
+	// type LogNetwork = CollectorNetwork<report::Log<&'static str, Id>>;
+	type RoundNetwork = BroadcastNetwork<SignedMessage<u64, &'static str, Signature, Id>>;
+	type GlobalMessageNetwork = BroadcastNetwork<GlobalMessage<Id>>;
 
 	pub(crate) fn make_network() -> (Network, NetworkRouting) {
 		let rounds = Arc::new(Mutex::new(HashMap::new()));
@@ -292,9 +292,9 @@ pub mod environment {
 		pub fn make_round_comms(
 			&self,
 			view_number: u64,
-			node_id: ID,
+			node_id: Id,
 		) -> (
-			impl Stream<Item = Result<SignedMessage<u64, &'static str, Signature, ID>, Error>>,
+			impl Stream<Item = Result<SignedMessage<u64, &'static str, Signature, Id>, Error>>,
 			impl Sink<Message<u64, &'static str>, Error = Error>,
 		) {
 			log::trace!("make_round_comms, view_number: {}, node_id: {}", view_number, node_id);
@@ -319,8 +319,8 @@ pub mod environment {
 		pub fn make_global_comms(
 			&self,
 		) -> (
-			impl Stream<Item = Result<GlobalMessage<ID>, Error>>,
-			impl Sink<GlobalMessage<ID>, Error = Error>,
+			impl Stream<Item = Result<GlobalMessage<Id>, Error>>,
+			impl Sink<GlobalMessage<Id>, Error = Error>,
 		) {
 			log::trace!("make_global_comms");
 			let mut global = self.global.lock();
@@ -331,14 +331,14 @@ pub mod environment {
 	}
 
 	pub struct DummyEnvironment {
-		local_id: ID,
+		local_id: Id,
 		network: Network,
 		listeners: Mutex<Vec<UnboundedSender<(Hash, BlockNumber)>>>,
 		chain: Mutex<DummyChain>,
 	}
 
 	impl DummyEnvironment {
-		pub fn new(network: Network, local_id: ID) -> Self {
+		pub fn new(network: Network, local_id: Id) -> Self {
 			DummyEnvironment {
 				network,
 				local_id,
@@ -372,10 +372,10 @@ pub mod environment {
 
 	impl Environment for DummyEnvironment {
 		type Timer = Box<dyn Future<Output = Result<(), Error>> + Unpin + Send>;
-		type ID = ID;
+		type Id = Id;
 		type Signature = Signature;
 		type In = Box<
-			dyn Stream<Item = Result<SignedMessage<u64, &'static str, Signature, ID>, Error>>
+			dyn Stream<Item = Result<SignedMessage<u64, &'static str, Signature, Id>, Error>>
 				+ Unpin
 				+ Send,
 		>;
@@ -384,11 +384,11 @@ pub mod environment {
 		type Hash = Hash;
 		type Number = BlockNumber;
 
-		fn voter_data(&self) -> VoterData<Self::ID> {
+		fn voter_data(&self) -> VoterData<Self::Id> {
 			VoterData { local_id: self.local_id }
 		}
 
-		fn round_data(&self, view: u64) -> RoundData<Self::ID, Self::Timer, Self::In, Self::Out> {
+		fn round_data(&self, view: u64) -> RoundData<Self::Id, Self::Timer, Self::In, Self::Out> {
 			log::trace!("{:?} round_data view: {}", self.local_id, view);
 			const GOSSIP_DURATION: Duration = Duration::from_millis(500);
 
