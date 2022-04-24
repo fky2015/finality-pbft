@@ -6,8 +6,8 @@ type BlockNumber = u64;
 pub mod chain {
 	use super::*;
 	use crate::std::collections::BTreeMap;
-	pub const GENESIS_HASH: &str = "genesis";
-	const NULL_HASH: &str = "NULL";
+	pub const GENESIS_HASH: &'static str = "genesis";
+	const NULL_HASH: &'static str = "NULL";
 
 	#[derive(Debug)]
 	struct BlockRecord {
@@ -98,7 +98,7 @@ pub mod environment {
 			communicate::{RoundData, VoterData},
 			Environment,
 		},
-		Error, GlobalMessage, Message, SignedMessage,
+		Error, GlobalMessageIn, GlobalMessageOut, Message, SignedMessage,
 	};
 
 	use super::*;
@@ -221,8 +221,8 @@ pub mod environment {
 	}
 
 	// type LogNetwork = CollectorNetwork<report::Log<&'static str, Id>>;
-	type RoundNetwork = BroadcastNetwork<SignedMessage<u64, &'static str, Signature, Id>>;
-	type GlobalMessageNetwork = BroadcastNetwork<GlobalMessage<Id>>;
+	type RoundNetwork = BroadcastNetwork<SignedMessage<BlockNumber, Hash, Signature, Id>>;
+	type GlobalMessageNetwork = BroadcastNetwork<GlobalMessageIn<Hash, BlockNumber, Signature, Id>>;
 
 	pub(crate) fn make_network() -> (Network, NetworkRouting) {
 		let rounds = Arc::new(Mutex::new(HashMap::new()));
@@ -294,8 +294,8 @@ pub mod environment {
 			view_number: u64,
 			node_id: Id,
 		) -> (
-			impl Stream<Item = Result<SignedMessage<u64, &'static str, Signature, Id>, Error>>,
-			impl Sink<Message<u64, &'static str>, Error = Error>,
+			impl Stream<Item = Result<SignedMessage<BlockNumber, Hash, Signature, Id>, Error>>,
+			impl Sink<Message<BlockNumber, Hash>, Error = Error>,
 		) {
 			log::trace!("make_round_comms, view_number: {}, node_id: {}", view_number, node_id);
 			// let log_sender = self
@@ -304,7 +304,7 @@ pub mod environment {
 			// 	.add_node(move |log| report::Log { id: node_id.clone(), state: log });
 			let mut rounds = self.rounds.lock();
 			let round_comm = rounds.entry(view_number).or_insert_with(RoundNetwork::new).add_node(
-				move |message| SignedMessage { message, signature: node_id, from: node_id },
+				move |message| SignedMessage { message, signature: node_id, id: node_id },
 			);
 
 			for (key, value) in rounds.iter() {
@@ -319,12 +319,21 @@ pub mod environment {
 		pub fn make_global_comms(
 			&self,
 		) -> (
-			impl Stream<Item = Result<GlobalMessage<Id>, Error>>,
-			impl Sink<GlobalMessage<Id>, Error = Error>,
+			impl Stream<Item = Result<GlobalMessageIn<Hash, BlockNumber, Signature, Id>, Error>>,
+			impl Sink<GlobalMessageOut<Hash, BlockNumber, Signature, Id>, Error = Error>,
 		) {
 			log::trace!("make_global_comms");
 			let mut global = self.global.lock();
-			let global_comm = global.add_node(|v| v);
+			let f: fn(GlobalMessageOut<_, _, _, _>) -> GlobalMessageIn<_, _, _, _> = |msg| match msg
+			{
+				GlobalMessageOut::Commit(view, commit) => GlobalMessageIn::Commit(view, commit),
+
+				GlobalMessageOut::ViewChange(view_change) => {
+					GlobalMessageIn::ViewChange(view_change)
+				},
+				GlobalMessageOut::Empty => GlobalMessageIn::Empty,
+			};
+			let global_comm = global.add_node(f);
 
 			global_comm
 		}
@@ -375,11 +384,11 @@ pub mod environment {
 		type Id = Id;
 		type Signature = Signature;
 		type In = Box<
-			dyn Stream<Item = Result<SignedMessage<u64, &'static str, Signature, Id>, Error>>
+			dyn Stream<Item = Result<SignedMessage<BlockNumber, Hash, Signature, Id>, Error>>
 				+ Unpin
 				+ Send,
 		>;
-		type Out = Pin<Box<dyn Sink<Message<u64, &'static str>, Error = Error> + Send>>;
+		type Out = Pin<Box<dyn Sink<Message<BlockNumber, Hash>, Error = Error> + Send>>;
 		type Error = Error;
 		type Hash = Hash;
 		type Number = BlockNumber;

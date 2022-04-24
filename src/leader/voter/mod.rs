@@ -21,8 +21,10 @@ pub struct Voter<E: Environment, GlobalIn, GlobalOut> {
 
 impl<E: Environment, GlobalIn, GlobalOut> Voter<E, GlobalIn, GlobalOut>
 where
-	GlobalIn: Stream<Item = Result<GlobalMessage<E::Id>, E::Error>> + Unpin,
-	GlobalOut: Sink<GlobalMessage<E::Id>, Error = E::Error> + Unpin,
+	GlobalIn: Stream<Item = Result<GlobalMessageIn<E::Hash, E::Number, E::Signature, E::Id>, E::Error>>
+		+ Unpin,
+	GlobalOut:
+		Sink<GlobalMessageOut<E::Hash, E::Number, E::Signature, E::Id>, Error = E::Error> + Unpin,
 {
 	pub fn new(
 		env: Arc<E>,
@@ -94,11 +96,12 @@ where
 		let mut new_view = current_view + 1;
 		loop {
 			log::info!("id: {:?}, start view_change: {new_view}", id);
-			// create new view change message
-			let view_change = GlobalMessage::ViewChange { new_view, id: id.clone() };
-			let mut log = HashMap::<E::Id, GlobalMessage<E::Id>>::new();
 
-			global_outgoing.send(view_change.clone()).await?;
+			// create new view change message
+			let view_change = ViewChange::new(new_view, id.clone());
+			let mut log = HashMap::<E::Id, ViewChange<E::Id>>::new();
+
+			global_outgoing.send(GlobalMessageOut::ViewChange(view_change.clone())).await?;
 
 			let mut timeout = Delay::new(Duration::from_millis(DELAY_VIEW_CHANGE_WAIT)).fuse();
 
@@ -110,10 +113,10 @@ where
 					},
 					msg = global_incoming.try_next().fuse() => {
 						let msg = msg?.unwrap();
-						if let GlobalMessage::ViewChange { new_view : new_view_received, id} = msg.clone() {
-							if new_view == new_view_received {
+						if let GlobalMessageIn::ViewChange (msg) = msg {
+							if new_view == msg.new_view {
 								log::trace!("{:?} save valid viewChange {:?}", id, msg);
-								log.insert(id, msg);
+								log.insert(msg.id.clone(), msg);
 							}
 						}
 					}
@@ -146,7 +149,7 @@ where
 			// FIXME: This message could be eliminated by implmenting following step:
 			// a) always create next-view network aggressively, even in the case of a view change.
 			// a.1) In detail, the network should be created when the view number changed.
-			let _ = self.global_outgoing.send(GlobalMessage::Empty).await;
+			let _ = self.global_outgoing.send(GlobalMessageOut::Empty).await;
 
 			// run both global_incoming and view_round
 			// wait one of them return
@@ -252,9 +255,13 @@ use futures::{Future, FutureExt, Sink, SinkExt, Stream, TryStreamExt};
 use futures_timer::Delay;
 use parking_lot::Mutex;
 
+use crate::leader::{Commit, PrePrepare, Prepare, ViewChange};
 use crate::BlockNumberOps;
 
-use super::{CurrentState, Error, GlobalMessage, Message, SignedMessage, Storage, VoterSet};
+use super::{
+	CurrentState, Error, GlobalMessageIn, GlobalMessageOut, Message, SignedMessage, Storage,
+	VoterSet,
+};
 
 /// Necessary environment for a voter.
 ///
@@ -377,7 +384,7 @@ where
 		while let Some(msg) = incoming.try_next().await? {
 			log::trace!("process_incoming: {:?}", msg);
 			let SignedMessage { message, .. } = msg;
-			log.lock().save_message(msg.from, message);
+			log.lock().save_message(msg.id, message);
 		}
 
 		log::trace!("end of process_incoming");
@@ -416,7 +423,8 @@ where
 			// The only way to determine primary fail is to
 			// check last view round message to see if primary send
 			// anything.
-			self.multicast(Message::EmptyPrePrepare).await?;
+			let preprepare = PrePrepare::new();
+			self.multicast(Message::PrePrepare(preprepare)).await?;
 		}
 
 		Delay::new(Duration::from_millis(DELAY_PRE_PREPARE_MILLI)).await;
@@ -436,11 +444,11 @@ where
 			self.change_state(CurrentState::Prepare);
 		}
 
-		let prepare_msg = Message::Prepare {
-			view: self.view,
-			seq_number: self.current_height,
-			digest: self.message_log.lock().preprepare_hash.clone().unwrap().clone(),
-		};
+		let prepare_msg = Message::Prepare(Prepare::new(
+			self.view,
+			self.current_height,
+			self.message_log.lock().preprepare_hash.clone().unwrap().clone(),
+		));
 
 		self.multicast(prepare_msg).await?;
 
@@ -458,7 +466,9 @@ where
 			self.validate_prepare();
 		}
 
-		let commit_msg = Message::Commit { view: self.view, seq_number: self.current_height };
+		let commit = Commit::new(self.view, self.current_height);
+
+		let commit_msg = Message::Commit(commit);
 
 		self.multicast(commit_msg).await?;
 
