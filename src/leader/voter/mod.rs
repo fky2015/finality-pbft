@@ -1,5 +1,44 @@
 use std::{sync::Arc, time::Duration};
 
+/// Communication between nodes that is not round-localized.
+#[cfg_attr(any(test, feature = "test-helpers"), derive(Clone))]
+#[derive(Debug)]
+pub enum GlobalMessageIn<H, N, S, Id> {
+	/// A commit message.
+	Commit(
+		u64,
+		CompactCommit<H, N, S, Id>,
+		// Callback<CommitProcessingOutcome>
+	),
+	/// A catch up message.
+	CatchUp(
+		CatchUp<H, N, S, Id>,
+		// Callback<CatchUpProcessingOutcome>
+	),
+	/// multicast <view + 1, latest stable checkpoint, C: a set of pairs with the sequence number
+	/// and digest of each checkpoint, P, Q, i>
+	ViewChange(ViewChange<Id>),
+
+	Empty,
+}
+
+/// Communication between nodes that is not round-localized.
+#[cfg_attr(any(test, feature = "test-helpers"), derive(Clone))]
+#[derive(Debug)]
+pub enum GlobalMessageOut<H, N, S, Id> {
+	/// A commit message.
+	Commit(
+		u64,
+		CompactCommit<H, N, S, Id>,
+		// Callback<CommitProcessingOutcome>
+	),
+	/// multicast <view + 1, latest stable checkpoint, C: a set of pairs with the sequence number
+	/// and digest of each checkpoint, P, Q, i>
+	ViewChange(ViewChange<Id>),
+
+	Empty,
+}
+
 pub(crate) mod helper {
 	// TODO: eliminate this
 	pub fn supermajority(n: usize, valid_number: usize) -> bool {
@@ -259,8 +298,7 @@ use crate::leader::{Commit, PrePrepare, Prepare, ViewChange};
 use crate::BlockNumberOps;
 
 use super::{
-	CurrentState, Error, GlobalMessageIn, GlobalMessageOut, Message, SignedMessage, Storage,
-	VoterSet,
+	CatchUp, CompactCommit, CurrentState, Error, Message, SignedMessage, Storage, VoterSet,
 };
 
 /// Necessary environment for a voter.
