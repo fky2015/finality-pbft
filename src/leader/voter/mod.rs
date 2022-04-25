@@ -1,20 +1,166 @@
 use std::{sync::Arc, time::Duration};
 
+/// Callback used to pass information about the outcome of importing a given
+/// message (e.g. vote, commit, catch up). Useful to propagate data to the
+/// network after making sure the import is successful.
+pub enum Callback<O> {
+	/// Default value.
+	Blank,
+	/// Callback to execute given a processing outcome.
+	Work(Box<dyn FnMut(O) + Send>),
+}
+
+impl<O> std::fmt::Debug for Callback<O> {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			Self::Blank => write!(f, "Blank"),
+			Self::Work(_arg0) => write!(f, "Work"),
+		}
+	}
+}
+
+#[cfg(any(test, feature = "test-helpers"))]
+impl<O> Clone for Callback<O> {
+	fn clone(&self) -> Self {
+		Callback::Blank
+	}
+}
+
+impl<O> Callback<O> {
+	/// Do the work associated with the callback, if any.
+	pub fn run(&mut self, o: O) {
+		match self {
+			Callback::Blank => {},
+			Callback::Work(cb) => cb(o),
+		}
+	}
+}
+
+/// The outcome of processing a commit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommitProcessingOutcome {
+	/// It was beneficial to process this commit.
+	Good(GoodCommit),
+	/// It wasn't beneficial to process this commit. We wasted resources.
+	Bad(BadCommit),
+}
+
+#[cfg(any(test, feature = "test-helpers"))]
+impl CommitProcessingOutcome {
+	/// Returns a `Good` instance of commit processing outcome's opaque type. Useful for testing.
+	pub fn good() -> CommitProcessingOutcome {
+		CommitProcessingOutcome::Good(GoodCommit::new())
+	}
+
+	/// Returns a `Bad` instance of commit processing outcome's opaque type. Useful for testing.
+	pub fn bad() -> CommitProcessingOutcome {
+		CommitProcessingOutcome::Bad(CommitValidationResult::<(), ()>::default().into())
+	}
+}
+
+/// The result of processing for a good commit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GoodCommit {}
+
+impl GoodCommit {
+	pub(crate) fn new() -> Self {
+		GoodCommit {}
+	}
+}
+
+/// The result of processing for a bad commit
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BadCommit {
+	num_commits: usize,
+	num_duplicated_commits: usize,
+	num_invalid_voters: usize,
+}
+
+impl BadCommit {
+	/// Get the number of precommits
+	pub fn num_commits(&self) -> usize {
+		self.num_commits
+	}
+
+	/// Get the number of duplicated precommits
+	pub fn num_duplicated(&self) -> usize {
+		self.num_duplicated_commits
+	}
+
+	/// Get the number of invalid voters in the precommits
+	pub fn num_invalid_voters(&self) -> usize {
+		self.num_invalid_voters
+	}
+}
+
+impl<H, N> From<CommitValidationResult<H, N>> for BadCommit {
+	fn from(r: CommitValidationResult<H, N>) -> Self {
+		BadCommit {
+			num_commits: r.num_commits,
+			num_duplicated_commits: r.num_duplicated_commits,
+			num_invalid_voters: r.num_invalid_voters,
+		}
+	}
+}
+
+/// The outcome of processing a catch up.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CatchUpProcessingOutcome {
+	/// It was beneficial to process this catch up.
+	Good(GoodCatchUp),
+	/// It wasn't beneficial to process this catch up, it is invalid and we
+	/// wasted resources.
+	Bad(BadCatchUp),
+	/// The catch up wasn't processed because it is useless, e.g. it is for a
+	/// round lower than we're currently in.
+	Useless,
+}
+
+#[cfg(any(test, feature = "test-helpers"))]
+impl CatchUpProcessingOutcome {
+	/// Returns a `Bad` instance of catch up processing outcome's opaque type. Useful for testing.
+	pub fn bad() -> CatchUpProcessingOutcome {
+		CatchUpProcessingOutcome::Bad(BadCatchUp::new())
+	}
+
+	/// Returns a `Good` instance of catch up processing outcome's opaque type. Useful for testing.
+	pub fn good() -> CatchUpProcessingOutcome {
+		CatchUpProcessingOutcome::Good(GoodCatchUp::new())
+	}
+}
+
+/// The result of processing for a good catch up.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GoodCatchUp {
+	_priv: (), // lets us add stuff without breaking API.
+}
+
+impl GoodCatchUp {
+	pub(crate) fn new() -> Self {
+		GoodCatchUp { _priv: () }
+	}
+}
+
+/// The result of processing for a bad catch up.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BadCatchUp {
+	_priv: (), // lets us add stuff without breaking API.
+}
+
+impl BadCatchUp {
+	pub(crate) fn new() -> Self {
+		BadCatchUp { _priv: () }
+	}
+}
+
 /// Communication between nodes that is not round-localized.
 #[cfg_attr(any(test, feature = "test-helpers"), derive(Clone))]
 #[derive(Debug)]
 pub enum GlobalMessageIn<H, N, S, Id> {
 	/// A commit message.
-	Commit(
-		u64,
-		CompactCommit<H, N, S, Id>,
-		// Callback<CommitProcessingOutcome>
-	),
+	Commit(u64, CompactCommit<H, N, S, Id>, Callback<CommitProcessingOutcome>),
 	/// A catch up message.
-	CatchUp(
-		CatchUp<H, N, S, Id>,
-		// Callback<CatchUpProcessingOutcome>
-	),
+	CatchUp(CatchUp<H, N, S, Id>, Callback<CatchUpProcessingOutcome>),
 	/// multicast <view + 1, latest stable checkpoint, C: a set of pairs with the sequence number
 	/// and digest of each checkpoint, P, Q, i>
 	ViewChange(ViewChange<Id>),
@@ -298,7 +444,8 @@ use crate::leader::{Commit, PrePrepare, Prepare, ViewChange};
 use crate::BlockNumberOps;
 
 use super::{
-	CatchUp, CompactCommit, CurrentState, Error, Message, SignedMessage, Storage, VoterSet,
+	CatchUp, CommitValidationResult, CompactCommit, CurrentState, Error, Message, SignedMessage,
+	Storage, VoterSet,
 };
 
 /// Necessary environment for a voter.
@@ -725,7 +872,7 @@ mod tests {
 
 	#[test]
 	fn change_view_when_primary_fail() {
-		simple_logger::init_with_level(log::Level::Trace).unwrap();
+		// simple_logger::init_with_level(log::Level::Trace).unwrap();
 		let voters_num = 4;
 		let online_voters_num = 3;
 		let voter_set = VoterSet::new((0..voters_num).into_iter().collect());

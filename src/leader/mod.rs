@@ -463,3 +463,44 @@ impl<Id: Eq + Ord + Clone> VoterSet<Id> {
 		self.voters.iter()
 	}
 }
+
+/// Struct returned from `validate_commit` function with information
+/// about the validation result.
+pub struct CommitValidationResult<H, N> {
+	target: Option<(H, N)>,
+	num_commits: usize,
+	num_duplicated_commits: usize,
+	num_invalid_voters: usize,
+}
+
+impl<H, N> CommitValidationResult<H, N> {
+	pub fn target(&self) -> Option<&(H, N)> {
+		self.target.as_ref()
+	}
+
+	/// Returns the number of precommits in the commit.
+	pub fn num_commits(&self) -> usize {
+		self.num_commits
+	}
+
+	/// Returns the number of duplicate precommits in the commit.
+	pub fn num_duplicated_commits(&self) -> usize {
+		self.num_duplicated_commits
+	}
+
+	/// Returns the number of invalid voters in the commit.
+	pub fn num_invalid_voters(&self) -> usize {
+		self.num_invalid_voters
+	}
+}
+
+impl<H, N> Default for CommitValidationResult<H, N> {
+	fn default() -> Self {
+		CommitValidationResult {
+			target: None,
+			num_commits: 0,
+			num_duplicated_commits: 0,
+			num_invalid_voters: 0,
+		}
+	}
+}

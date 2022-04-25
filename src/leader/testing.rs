@@ -96,9 +96,9 @@ pub mod environment {
 		testing::chain::DummyChain,
 		voter::{
 			communicate::{RoundData, VoterData},
-			Environment,
+			Callback, Environment, GlobalMessageIn, GlobalMessageOut,
 		},
-		Error, GlobalMessageIn, GlobalMessageOut, Message, SignedMessage,
+		Error, Message, SignedMessage,
 	};
 
 	use super::*;
@@ -326,7 +326,9 @@ pub mod environment {
 			let mut global = self.global.lock();
 			let f: fn(GlobalMessageOut<_, _, _, _>) -> GlobalMessageIn<_, _, _, _> = |msg| match msg
 			{
-				GlobalMessageOut::Commit(view, commit) => GlobalMessageIn::Commit(view, commit),
+				GlobalMessageOut::Commit(view, commit) => {
+					GlobalMessageIn::Commit(view, commit, Callback::Blank)
+				},
 
 				GlobalMessageOut::ViewChange(view_change) => {
 					GlobalMessageIn::ViewChange(view_change)
