@@ -257,8 +257,8 @@ pub mod report {
 	use super::super::CurrentState;
 	use std::collections::{HashMap, HashSet};
 
-	#[derive(Clone, Debug)]
-	pub struct ViewState<Hash, Id> {
+	#[derive(Clone, Debug, PartialEq, Eq)]
+	pub struct ViewState<Hash, Id: Eq + std::hash::Hash> {
 		pub state: CurrentState,
 		pub total_number: usize,
 		pub threshold: usize,
@@ -271,7 +271,7 @@ pub mod report {
 	}
 
 	#[derive(Clone, Debug)]
-	pub struct VoterState<Hash, Id> {
+	pub struct VoterState<Hash, Id: Eq + std::hash::Hash> {
 		/// Voting rounds running in the background.
 		pub background_views: HashMap<u64, ViewState<Hash, Id>>,
 		/// The current best voting view.
@@ -279,7 +279,7 @@ pub mod report {
 	}
 
 	#[derive(Clone, Debug)]
-	pub struct Log<Hash, Id> {
+	pub struct Log<Hash, Id: Eq + std::hash::Hash> {
 		pub id: Id,
 		pub state: ViewState<Hash, Id>,
 	}

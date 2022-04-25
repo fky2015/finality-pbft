@@ -274,7 +274,7 @@ impl<Id> ViewChange<Id> {
 }
 
 #[cfg_attr(any(feature = "std", test), derive(Debug))]
-#[derive(PartialEq, Clone)]
+#[derive(PartialEq, Eq, Clone)]
 pub enum CurrentState {
 	// Initial state.
 	PrePrepare,
