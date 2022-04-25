@@ -9,6 +9,8 @@ extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
 
+use std::num::NonZeroUsize;
+
 #[cfg(feature = "derive-codec")]
 use parity_scale_codec::{Decode, Encode};
 #[cfg(feature = "derive-codec")]
@@ -441,12 +443,23 @@ impl<Id: Eq + Ord + Clone> VoterSet<Id> {
 		self.voters.contains(id)
 	}
 
-	pub fn len(&self) -> usize {
-		self.voters.len()
-	}
-
 	pub fn threshould(&self) -> usize {
 		self.threshould
+	}
+
+	/// Get the size of the set.
+	pub fn len(&self) -> NonZeroUsize {
+		unsafe {
+			// SAFETY: By VoterSet::new()
+			NonZeroUsize::new_unchecked(self.voters.len())
+		}
+	}
+
+	/// Get the nth voter in the set, if any.
+	///
+	/// Returns `None` if `n >= len`.
+	pub fn nth(&self, n: usize) -> Option<&Id> {
+		self.voters.get(n)
 	}
 
 	pub fn voters(&self) -> &[Id] {
@@ -455,6 +468,11 @@ impl<Id: Eq + Ord + Clone> VoterSet<Id> {
 
 	pub fn get_primary(&self, view: u64) -> Id {
 		self.voters.get(view as usize % self.voters.len()).cloned().unwrap()
+	}
+
+	/// Whether the set contains a voter with the given ID.
+	pub fn contains(&self, id: &Id) -> bool {
+		self.voters.binary_search_by_key(&id, |id| id).is_ok()
 	}
 
 	/// Get an iterator over the voters in the set, as given by

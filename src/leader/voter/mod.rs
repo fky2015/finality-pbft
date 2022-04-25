@@ -664,7 +664,7 @@ where
 
 	fn validate_prepare(&mut self) -> bool {
 		let c = self.message_log.lock().count_prepare();
-		if helper::supermajority(self.voter_set.len(), c) {
+		if helper::supermajority(self.voter_set.len().get(), c) {
 			self.change_state(CurrentState::Commit)
 		}
 		true
@@ -672,7 +672,7 @@ where
 
 	fn validate_commit(&mut self) -> bool {
 		let c = self.message_log.lock().count_commit();
-		if helper::supermajority(self.voter_set.len(), c) {
+		if helper::supermajority(self.voter_set.len().get(), c) {
 			self.change_state(CurrentState::PrePrepare);
 			return true;
 		}
