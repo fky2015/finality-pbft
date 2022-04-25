@@ -444,4 +444,10 @@ impl<Id: Eq + Ord + Clone> VoterSet<Id> {
 	pub fn get_primary(&self, view: u64) -> Id {
 		self.voters.get(view as usize % self.voters.len()).cloned().unwrap()
 	}
+
+	/// Get an iterator over the voters in the set, as given by
+	/// the associated total order.
+	pub fn iter(&self) -> impl Iterator<Item = &Id> {
+		self.voters.iter()
+	}
 }
