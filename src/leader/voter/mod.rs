@@ -200,7 +200,7 @@ where
 
 			// restart new voting round.
 			log::trace!("{:?} current voting round finish: {:?}", self.local_id, result);
-			if let Err(e) = result.clone() {
+			if let Err(e) = result {
 				log::warn!("Error throw by ViewRound: {:?}", e);
 				// TODO: may need to change view
 				let new_view = Voter::<E, GlobalIn, GlobalOut>::change_view(
@@ -322,7 +322,7 @@ pub trait Environment {
 	/// The output stream used to communicate with the outside world.
 	type Out: Sink<Message<Self::Number, Self::Hash>, Error = Self::Error> + Unpin;
 	/// The associated Error type.
-	type Error: From<Error> + ::std::error::Error + Clone;
+	type Error: From<Error> + ::std::error::Error;
 	/// Hash type used in blockchain or digest.
 	type Hash: Eq + Clone + core::fmt::Debug;
 	/// The block number type.
