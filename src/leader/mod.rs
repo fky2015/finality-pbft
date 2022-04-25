@@ -285,12 +285,6 @@ pub enum CurrentState {
 	// NewView,
 }
 
-// trait MessageStorage<H> {
-// 	fn save_message(&mut self, hash: H, message: Message);
-// 	fn count_prepare(&self, hash: H) -> bool;
-// 	fn count_commit(&self, hash: H) -> bool;
-// }
-
 /// Arithmetic necessary for a block number.
 pub trait BlockNumberOps:
 	std::fmt::Debug
@@ -322,6 +316,24 @@ struct Storage<N, H, Id> {
 	preprepare: BTreeMap<Id, ()>,
 	prepare: BTreeMap<Id, Prepare<N, H>>,
 	commit: BTreeMap<Id, Commit<N>>,
+}
+
+/// State of the view. Generate by [`Storage`].
+#[derive(PartialEq, Clone)]
+#[cfg_attr(any(feature = "std", test), derive(Debug))]
+#[cfg_attr(feature = "derive-codec", derive(Encode, Decode, scale_info::TypeInfo))]
+pub struct State<H, N> {
+	/// The finalized block.
+	pub finalized: Option<(H, N)>,
+	/// Whether the round is completable.
+	pub completable: bool,
+}
+
+impl<H: Clone, N: Clone> State<H, N> {
+	/// Genesis state.
+	pub fn genesis(genesis: (H, N)) -> Self {
+		State { finalized: Some(genesis.clone()), completable: true }
+	}
 }
 
 impl<N, H, Id> Storage<N, H, Id>
