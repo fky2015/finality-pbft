@@ -168,6 +168,8 @@ pub enum GlobalMessageIn<D, N, S, Id> {
 	Empty,
 }
 
+impl<D, N, S, Id> Unpin for GlobalMessageIn<D, N, S, Id> {}
+
 /// Communication between nodes that is not round-localized.
 #[cfg_attr(any(test, feature = "test-helpers"), derive(Clone))]
 #[derive(Debug)]
