@@ -160,7 +160,7 @@ pub enum GlobalMessageIn<D, N, S, Id> {
 	/// A commit message.
 	Commit(u64, CompactCommit<D, N, S, Id>, Callback<CommitProcessingOutcome>),
 	/// A catch up message.
-	CatchUp(CatchUp<D, N, S, Id>, Callback<CatchUpProcessingOutcome>),
+	CatchUp(CatchUp<N, D, S, Id>, Callback<CatchUpProcessingOutcome>),
 	/// multicast <view + 1, latest stable checkpoint, C: a set of pairs with the sequence number
 	/// and digest of each checkpoint, P, Q, i>
 	ViewChange(ViewChange<Id>),
