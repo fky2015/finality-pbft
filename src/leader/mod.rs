@@ -102,14 +102,14 @@ impl std::error::Error for Error {}
 #[cfg_attr(feature = "derive-codec", derive(Encode, Decode, TypeInfo))]
 pub struct PrePrepare<N, D> {
 	pub view: u64,
-	pub block_number: N,
-	pub block_hash: D,
+	pub target_number: N,
+	pub target_hash: D,
 }
 
 impl<N, D> PrePrepare<N, D> {
 	/// Create a new preprepare message.
-	pub fn new(view: u64, block_number: N, block_hash: D) -> Self {
-		PrePrepare { view, block_number, block_hash }
+	pub fn new(view: u64, target_number: N, target_hash: D) -> Self {
+		PrePrepare { view, target_number, target_hash }
 	}
 }
 
@@ -133,15 +133,15 @@ pub struct Prepare<N, D> {
 	/// The view number.
 	pub view: u64,
 	/// The sequence number.
-	pub seq_number: N,
+	pub target_number: N,
 	/// The target block's hash.
-	pub digest: D,
+	pub target_hash: D,
 }
 
 impl<N, D> Prepare<N, D> {
 	/// Create a new prepare message.
 	pub fn new(view: u64, seq_number: N, digest: D) -> Self {
-		Prepare { view, seq_number, digest }
+		Prepare { view, target_number: seq_number, target_hash: digest }
 	}
 }
 
@@ -165,7 +165,7 @@ pub struct Commit<N, D> {
 	/// The view number.
 	pub view: u64,
 	/// The sequence number.
-	pub seq_number: N,
+	pub target_number: N,
 	/// The target block's hash.
 	pub target_hash: D,
 }
@@ -173,7 +173,7 @@ pub struct Commit<N, D> {
 impl<N, D> Commit<N, D> {
 	/// Create a new commit message.
 	pub fn new(view: u64, seq_number: N, target_hash: D) -> Self {
-		Commit { view, seq_number, target_hash }
+		Commit { view, target_number: seq_number, target_hash }
 	}
 }
 
@@ -205,8 +205,15 @@ pub enum Message<N, D> {
 	Commit(Commit<N, D>),
 }
 
-impl<H, N: Copy> Message<H, N> {
-	// TODO: get target?
+impl<D, N: Copy> Message<N, D> {
+	/// Get the target block of the vote.
+	pub fn target(&self) -> (&D, N) {
+		match *self {
+			Message::PrePrepare(ref v) => (&v.target_hash, v.target_number),
+			Message::Prepare(ref v) => (&v.target_hash, v.target_number),
+			Message::Commit(ref v) => (&v.target_hash, v.target_number),
+		}
+	}
 }
 
 /// A commit message which is an aggregate of commits.
@@ -234,6 +241,13 @@ pub struct SignedMessage<N, D, S, Id> {
 	pub signature: S,
 	/// The Id of the signer
 	pub id: Id,
+}
+
+impl<N: Copy, D, S, Id> SignedMessage<N, D, S, Id> {
+	/// Get the target block of the vote.
+	pub fn target(&self) -> (&D, N) {
+		self.message.target()
+	}
 }
 
 /// Authentication data for a set of many messages, currently a set of precommit signatures but
