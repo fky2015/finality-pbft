@@ -327,7 +327,7 @@ pub mod environment {
 			let f: fn(GlobalMessageOut<_, _, _, _>) -> GlobalMessageIn<_, _, _, _> = |msg| match msg
 			{
 				GlobalMessageOut::Commit(view, commit) => {
-					GlobalMessageIn::Commit(view, commit, Callback::Blank)
+					GlobalMessageIn::Commit(view, commit.into(), Callback::Blank)
 				},
 
 				GlobalMessageOut::ViewChange(view_change) => {
@@ -427,7 +427,7 @@ pub mod environment {
 			true
 		}
 
-		fn preprepare(&self, _view: u64) -> Option<(Self::Hash, Self::Number)> {
+		fn preprepare(&self, _view: u64) -> (Self::Hash, Self::Number) {
 			self.with_chain(|chain| {
 				log::info!(
 					"chain: {:?}, last_finalized: {:?}, next_to_be_finalized: {:?}",
@@ -435,7 +435,7 @@ pub mod environment {
 					chain.last_finalized(),
 					chain.next_to_be_finalized()
 				);
-				chain.next_to_be_finalized().ok()
+				chain.next_to_be_finalized().unwrap_or_else(|_| chain.last_finalized())
 			})
 		}
 	}

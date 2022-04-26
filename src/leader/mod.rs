@@ -100,12 +100,16 @@ impl std::error::Error for Error {}
 /// A preprepare message for a block in PBFT.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "derive-codec", derive(Encode, Decode, TypeInfo))]
-pub struct PrePrepare {}
+pub struct PrePrepare<N, D> {
+	pub view: u64,
+	pub block_number: N,
+	pub block_hash: D,
+}
 
-impl PrePrepare {
+impl<N, D> PrePrepare<N, D> {
 	/// Create a new preprepare message.
-	pub fn new() -> Self {
-		PrePrepare {}
+	pub fn new(view: u64, block_number: N, block_hash: D) -> Self {
+		PrePrepare { view, block_number, block_hash }
 	}
 }
 
@@ -113,9 +117,9 @@ impl PrePrepare {
 #[derive(Clone, PartialEq, Eq)]
 #[cfg_attr(any(feature = "std", test), derive(Debug))]
 #[cfg_attr(feature = "derive-codec", derive(Encode, Decode, TypeInfo))]
-pub struct SignedPrePrepare<S, Id> {
+pub struct SignedPrePrepare<N, D, S, Id> {
 	/// The preprepare message which has been signed.
-	pub preprepare: PrePrepare,
+	pub preprepare: PrePrepare<N, D>,
 	/// The signature on the message.
 	pub signature: S,
 	/// The Id of the signer.
@@ -157,17 +161,19 @@ pub struct SignedPrepare<N, D, S, Id> {
 /// A commit message for a block in PBFT.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "derive-codec", derive(Encode, Decode, TypeInfo))]
-pub struct Commit<N> {
+pub struct Commit<N, D> {
 	/// The view number.
 	pub view: u64,
 	/// The sequence number.
 	pub seq_number: N,
+	/// The target block's hash.
+	pub target_hash: D,
 }
 
-impl<N> Commit<N> {
+impl<N, D> Commit<N, D> {
 	/// Create a new commit message.
-	pub fn new(view: u64, seq_number: N) -> Self {
-		Commit { view, seq_number }
+	pub fn new(view: u64, seq_number: N, target_hash: D) -> Self {
+		Commit { view, seq_number, target_hash }
 	}
 }
 
@@ -175,9 +181,9 @@ impl<N> Commit<N> {
 #[derive(Clone, PartialEq, Eq)]
 #[cfg_attr(any(feature = "std", test), derive(Debug))]
 #[cfg_attr(feature = "derive-codec", derive(Encode, Decode, TypeInfo))]
-pub struct SignedCommit<N, S, Id> {
+pub struct SignedCommit<N, D, S, Id> {
 	/// The commit message which has been signed.
-	pub commit: Commit<N>,
+	pub commit: Commit<N, D>,
 	/// The signature on the message.
 	pub signature: S,
 	/// The Id of the signer.
@@ -192,11 +198,11 @@ pub struct SignedCommit<N, S, Id> {
 pub enum Message<N, D> {
 	/// A message to be sent to the network by primary alive but not yet haprimary alive but not
 	/// yet have a new block to make consensus.
-	PrePrepare(PrePrepare),
+	PrePrepare(PrePrepare<N, D>),
 	/// multicast (except from the primary) <view, number, Digest(m)>
 	Prepare(Prepare<N, D>),
 	/// multicast <view, number>
-	Commit(Commit<N>),
+	Commit(Commit<N, D>),
 }
 
 impl<H, N: Copy> Message<H, N> {
@@ -205,7 +211,17 @@ impl<H, N: Copy> Message<H, N> {
 
 /// A commit message which is an aggregate of commits.
 /// NOTE: Similar to `Commit` in GRANDPA.
-pub struct FinalizedCommit {}
+#[derive(Clone, PartialEq, Eq)]
+#[cfg_attr(any(feature = "std", test), derive(Debug))]
+#[cfg_attr(feature = "derive-codec", derive(Encode, Decode, TypeInfo))]
+pub struct FinalizedCommit<N, D, S, Id> {
+	/// The target block's hash.
+	pub target_hash: D,
+	/// The target block's number.
+	pub target_number: N,
+	/// Precommits for target block or any block after it that justify this commit.
+	pub commits: Vec<SignedCommit<N, D, S, Id>>,
+}
 
 /// A signed message.
 #[derive(Clone, PartialEq, Eq)]
@@ -229,15 +245,41 @@ pub type MultiAuthData<S, Id> = Vec<(S, Id)>;
 #[derive(Clone, PartialEq, Eq)]
 #[cfg_attr(any(feature = "std", test), derive(Debug))]
 #[cfg_attr(feature = "derive-codec", derive(Encode, Decode, TypeInfo))]
-pub struct CompactCommit<H, N, S, Id> {
+pub struct CompactCommit<D, N, S, Id> {
 	/// The target block's hash.
-	pub target_hash: H,
+	pub target_hash: D,
 	/// The target block's number.
 	pub target_number: N,
 	/// Precommits for target block or any block after it that justify this commit.
-	pub commits: Vec<Commit<N>>,
+	pub commits: Vec<Commit<N, D>>,
 	/// Authentication data for the commit.
 	pub auth_data: MultiAuthData<S, Id>,
+}
+
+impl<D: Clone, N: Clone, S, Id> From<FinalizedCommit<N, D, S, Id>> for CompactCommit<D, N, S, Id> {
+	fn from(commit: FinalizedCommit<N, D, S, Id>) -> Self {
+		CompactCommit {
+			target_hash: commit.target_hash,
+			target_number: commit.target_number,
+			commits: commit.commits.iter().map(|c| c.commit.clone()).collect(),
+			auth_data: commit.commits.into_iter().map(|c| (c.signature, c.id)).collect(),
+		}
+	}
+}
+
+impl<D, N, S, Id> From<CompactCommit<D, N, S, Id>> for FinalizedCommit<N, D, S, Id> {
+	fn from(commit: CompactCommit<D, N, S, Id>) -> Self {
+		FinalizedCommit {
+			target_hash: commit.target_hash,
+			target_number: commit.target_number,
+			commits: commit
+				.commits
+				.into_iter()
+				.zip(commit.auth_data.into_iter())
+				.map(|(c, (s, id))| SignedCommit { commit: c, signature: s, id })
+				.collect(),
+		}
+	}
 }
 
 /// A catch-up message, which is an aggregate of prevotes and precommits necessary
@@ -254,7 +296,7 @@ pub struct CatchUp<N, D, S, Id> {
 	/// Prevotes for target block or any block after it that justify this catch-up.
 	pub prepares: Vec<SignedPrepare<N, D, S, Id>>,
 	/// Precommits for target block or any block after it that justify this catch-up.
-	pub commits: Vec<SignedCommit<N, S, Id>>,
+	pub commits: Vec<SignedCommit<N, D, S, Id>>,
 	/// The base hash. See struct docs.
 	pub base_hash: D,
 	/// The base number. See struct docs.
@@ -313,11 +355,11 @@ where
 
 /// similar to: [`round::Round`]
 #[cfg_attr(any(feature = "std", test), derive(Debug))]
-struct Storage<N, H, Id> {
-	preprepare_hash: Option<H>,
+struct Storage<N, D, Id> {
+	preprepare_hash: Option<D>,
 	preprepare: BTreeMap<Id, ()>,
-	prepare: BTreeMap<Id, Prepare<N, H>>,
-	commit: BTreeMap<Id, Commit<N>>,
+	prepare: BTreeMap<Id, Prepare<N, D>>,
+	commit: BTreeMap<Id, Commit<N, D>>,
 }
 
 /// State of the view. Generate by [`Storage`].

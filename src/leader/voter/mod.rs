@@ -156,11 +156,11 @@ impl BadCatchUp {
 /// Communication between nodes that is not round-localized.
 #[cfg_attr(any(test, feature = "test-helpers"), derive(Clone))]
 #[derive(Debug)]
-pub enum GlobalMessageIn<H, N, S, Id> {
+pub enum GlobalMessageIn<D, N, S, Id> {
 	/// A commit message.
-	Commit(u64, CompactCommit<H, N, S, Id>, Callback<CommitProcessingOutcome>),
+	Commit(u64, CompactCommit<D, N, S, Id>, Callback<CommitProcessingOutcome>),
 	/// A catch up message.
-	CatchUp(CatchUp<H, N, S, Id>, Callback<CatchUpProcessingOutcome>),
+	CatchUp(CatchUp<D, N, S, Id>, Callback<CatchUpProcessingOutcome>),
 	/// multicast <view + 1, latest stable checkpoint, C: a set of pairs with the sequence number
 	/// and digest of each checkpoint, P, Q, i>
 	ViewChange(ViewChange<Id>),
@@ -171,11 +171,11 @@ pub enum GlobalMessageIn<H, N, S, Id> {
 /// Communication between nodes that is not round-localized.
 #[cfg_attr(any(test, feature = "test-helpers"), derive(Clone))]
 #[derive(Debug)]
-pub enum GlobalMessageOut<H, N, S, Id> {
+pub enum GlobalMessageOut<D, N, S, Id> {
 	/// A commit message.
 	Commit(
 		u64,
-		CompactCommit<H, N, S, Id>,
+		FinalizedCommit<N, D, S, Id>,
 		// Callback<CommitProcessingOutcome>
 	),
 	/// multicast <view + 1, latest stable checkpoint, C: a set of pairs with the sequence number
@@ -444,8 +444,8 @@ use crate::leader::{Commit, PrePrepare, Prepare, ViewChange};
 use crate::BlockNumberOps;
 
 use super::{
-	CatchUp, CommitValidationResult, CompactCommit, CurrentState, Error, Message, SignedMessage,
-	Storage, VoterSet,
+	CatchUp, CommitValidationResult, CompactCommit, CurrentState, Error, FinalizedCommit, Message,
+	SignedMessage, Storage, VoterSet,
 };
 
 /// Necessary environment for a voter.
@@ -485,7 +485,7 @@ pub trait Environment {
 	) -> communicate::RoundData<Self::Id, Self::Timer, Self::In, Self::Out>;
 
 	/// preprepare
-	fn preprepare(&self, view: u64) -> Option<(Self::Hash, Self::Number)>;
+	fn preprepare(&self, view: u64) -> (Self::Hash, Self::Number);
 
 	/// Finalize a block.
 	// TODO: maybe async?
@@ -597,20 +597,14 @@ where
 		const DELAY_PRE_PREPARE_MILLI: u64 = 1000;
 
 		// get preprepare hash
-		if let Some((hash, height)) = self.env.preprepare(self.view) {
-			log::trace!("{:?} preprepare_hash: {:?}", self.id, hash);
+		let (hash, height) = self.env.preprepare(self.view);
+		log::trace!("{:?} preprepare_hash: {:?}", self.id, hash);
 
-			self.current_height = height;
-			self.message_log.lock().preprepare_hash = Some(hash);
-		} else {
-			// Even if we cannot get pre_prepre, it doesn't mean primary fails.
-			//
-			// The only way to determine primary fail is to
-			// check last view round message to see if primary send
-			// anything.
-			let preprepare = PrePrepare::new();
-			self.multicast(Message::PrePrepare(preprepare)).await?;
-		}
+		self.current_height = height;
+		self.message_log.lock().preprepare_hash = Some(hash.clone());
+
+		let preprepare = PrePrepare::new(self.view, height, hash);
+		self.multicast(Message::PrePrepare(preprepare)).await?;
 
 		Delay::new(Duration::from_millis(DELAY_PRE_PREPARE_MILLI)).await;
 
@@ -651,7 +645,11 @@ where
 			self.validate_prepare();
 		}
 
-		let commit = Commit::new(self.view, self.current_height);
+		let commit = Commit::new(
+			self.view,
+			self.current_height,
+			self.message_log.lock().preprepare_hash.clone().unwrap().clone(),
+		);
 
 		let commit_msg = Message::Commit(commit);
 
