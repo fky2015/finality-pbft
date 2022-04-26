@@ -127,11 +127,11 @@ pub struct SignedPrePrepare<S, Id> {
 #[cfg_attr(feature = "derive-codec", derive(Encode, Decode, TypeInfo))]
 pub struct Prepare<N, D> {
 	/// The view number.
-	view: u64,
+	pub view: u64,
 	/// The sequence number.
-	seq_number: N,
+	pub seq_number: N,
 	/// The target block's hash.
-	digest: D,
+	pub digest: D,
 }
 
 impl<N, D> Prepare<N, D> {
@@ -159,9 +159,9 @@ pub struct SignedPrepare<N, D, S, Id> {
 #[cfg_attr(feature = "derive-codec", derive(Encode, Decode, TypeInfo))]
 pub struct Commit<N> {
 	/// The view number.
-	view: u64,
+	pub view: u64,
 	/// The sequence number.
-	seq_number: N,
+	pub seq_number: N,
 }
 
 impl<N> Commit<N> {
