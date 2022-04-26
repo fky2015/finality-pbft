@@ -536,6 +536,14 @@ impl<Id: Eq + Ord + Clone> VoterSet<Id> {
 	pub fn iter(&self) -> impl Iterator<Item = &Id> {
 		self.voters.iter()
 	}
+
+	/// Get the voter info for the voter with the given ID, if any.
+	pub fn get(&self, id: &Id) -> Option<&Id> {
+		self.voters
+			.binary_search_by_key(&id, |id| id)
+			.ok()
+			.map(|idx| &self.voters[idx])
+	}
 }
 
 /// Struct returned from `validate_commit` function with information
