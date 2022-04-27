@@ -474,9 +474,13 @@ pub struct VoterSet<Id: Eq + Ord> {
 }
 
 impl<Id: Eq + Ord + Clone> VoterSet<Id> {
-	pub fn new(voters: Vec<Id>) -> Self {
-		let len = voters.len() / 3 + 1;
-		Self { voters, threshould: len }
+	pub fn new(voters: Vec<Id>) -> Option<Self> {
+		if voters.is_empty() {
+			None
+		} else {
+			let len = voters.len() / 3 + 1;
+			Some(Self { voters, threshould: len })
+		}
 	}
 
 	pub fn add(&mut self, id: Id) {
@@ -539,10 +543,7 @@ impl<Id: Eq + Ord + Clone> VoterSet<Id> {
 
 	/// Get the voter info for the voter with the given ID, if any.
 	pub fn get(&self, id: &Id) -> Option<&Id> {
-		self.voters
-			.binary_search_by_key(&id, |id| id)
-			.ok()
-			.map(|idx| &self.voters[idx])
+		self.voters.binary_search_by_key(&id, |id| id).ok().map(|idx| &self.voters[idx])
 	}
 }
 

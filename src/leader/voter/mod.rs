@@ -770,7 +770,7 @@ mod tests {
 		let _ = simple_logger::init_with_level(log::Level::Info);
 
 		let local_id = 5;
-		let voter_set = VoterSet::new(vec![5]);
+		let voter_set = VoterSet::new(vec![5]).unwrap();
 
 		let (network, routing_network) = make_network();
 		let global_comms = network.make_global_comms();
@@ -821,7 +821,7 @@ mod tests {
 	fn multivoter() {
 		let voters_num = 4;
 		let online_voters_num = 3;
-		let voter_set = VoterSet::new((0..voters_num).into_iter().collect());
+		let voter_set = VoterSet::new((0..voters_num).into_iter().collect()).unwrap();
 
 		let (network, routing_network) = make_network();
 		let mut pool = LocalPool::new();
@@ -875,7 +875,7 @@ mod tests {
 		// simple_logger::init_with_level(log::Level::Trace).unwrap();
 		let voters_num = 4;
 		let online_voters_num = 3;
-		let voter_set = VoterSet::new((0..voters_num).into_iter().collect());
+		let voter_set = VoterSet::new((0..voters_num).into_iter().collect()).unwrap();
 
 		let (network, routing_network) = make_network();
 		let mut pool = LocalPool::new();
