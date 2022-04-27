@@ -693,30 +693,31 @@ where
 		if helper::supermajority(self.voter_set.len().get(), c) {
 			self.change_state(CurrentState::PrePrepare);
 
-			let f_commit = FinalizedCommit {
-				target_hash: self.message_log.lock().target.clone().unwrap(),
-				target_number: self.current_height,
-				commits: self
-					.message_log
-					.lock()
-					.commit
-					.iter()
-					.map(|(id, (commit, sig))| SignedCommit {
-						commit: commit.clone(),
-						signature: sig.clone(),
-						id: id.clone(),
-					})
-					.collect(),
-			};
+			let target_hash = self.message_log.lock().target.clone().unwrap();
+			let commits = self
+				.message_log
+				.lock()
+				.commit
+				.iter()
+				.map(|(id, (commit, sig))| SignedCommit {
+					commit: commit.clone(),
+					signature: sig.clone(),
+					id: id.clone(),
+				})
+				.collect();
+
+			let f_commit =
+				FinalizedCommit { target_hash, target_number: self.current_height, commits };
 
 			return Some(f_commit);
 		}
+		log::info!("{:?} commit not enough", self.id);
 		None
 	}
 
 	async fn multicast(&mut self, msg: Message<E::Number, E::Hash>) -> Result<(), E::Error> {
 		log::trace!("{:?} multicast message: {:?}", self.id, msg);
-		dbg!(self.outgoing.send(msg).await)
+		self.outgoing.send(msg).await
 	}
 
 	fn primary_alive(&self) -> Result<(), E::Error> {
@@ -802,7 +803,7 @@ mod tests {
 	// communication test
 	#[test]
 	fn talking_to_myself() {
-		let _ = simple_logger::init_with_level(log::Level::Info);
+		let _ = simple_logger::init_with_level(log::Level::Trace);
 
 		let local_id = 5;
 		let voter_set = VoterSet::new(vec![5]).unwrap();
