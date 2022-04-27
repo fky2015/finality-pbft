@@ -369,11 +369,11 @@ where
 
 /// similar to: [`round::Round`]
 #[cfg_attr(any(feature = "std", test), derive(Debug))]
-struct Storage<N, D, Id> {
-	preprepare_hash: Option<D>,
-	preprepare: BTreeMap<Id, ()>,
-	prepare: BTreeMap<Id, Prepare<N, D>>,
-	commit: BTreeMap<Id, Commit<N, D>>,
+struct Storage<N, D, S, Id> {
+	target: Option<D>,
+	preprepare: BTreeMap<Id, (PrePrepare<N, D>, S)>,
+	prepare: BTreeMap<Id, (Prepare<N, D>, S)>,
+	commit: BTreeMap<Id, (Commit<N, D>, S)>,
 }
 
 /// State of the view. Generate by [`Storage`].
@@ -394,7 +394,7 @@ impl<H: Clone, N: Clone> State<H, N> {
 	}
 }
 
-impl<N, H, Id> Storage<N, H, Id>
+impl<N, H, Id, S> Storage<N, H, S, Id>
 where
 	Id: Clone + Eq + std::hash::Hash + Ord + std::fmt::Debug,
 	H: std::fmt::Debug,
@@ -402,7 +402,7 @@ where
 {
 	fn new() -> Self {
 		Self {
-			preprepare_hash: None,
+			target: None,
 			preprepare: Default::default(),
 			prepare: Default::default(),
 			commit: Default::default(),
@@ -416,37 +416,38 @@ where
 	}
 }
 
-impl<N, H, Id: Eq + Ord + std::hash::Hash> Storage<N, H, Id>
+impl<N, H, Id: Eq + Ord + std::hash::Hash, S> Storage<N, H, S, Id>
 where
 	Id: std::fmt::Debug,
 	H: std::fmt::Debug,
 	N: std::fmt::Debug,
+	S: std::fmt::Debug,
 {
-	fn save_message(&mut self, from: Id, message: Message<N, H>) {
+	fn save_message(&mut self, from: Id, message: Message<N, H>, signature: S) {
 		#[cfg(feature = "std")]
 		log::trace!("insert message to Storage, from: {:?}", from);
 		match message {
 			Message::Prepare(msg) => {
 				#[cfg(feature = "std")]
 				log::trace!("insert message to Prepare, msg: {:?}", msg);
-				self.prepare.insert(from, msg);
+				self.prepare.insert(from, (msg, signature));
 			},
 			Message::Commit(msg) => {
 				#[cfg(feature = "std")]
 				log::trace!("insert message to Commit, msg: {:?}", msg);
-				self.commit.insert(from, msg);
+				self.commit.insert(from, (msg, signature));
 			},
-			Message::PrePrepare(..) => {
+			Message::PrePrepare(msg) => {
 				#[cfg(feature = "std")]
 				log::trace!("insert message to preprepare, msg: EmptyPrePrepare");
-				self.preprepare.insert(from, ());
+				self.preprepare.insert(from, (msg, signature));
 			},
 		}
 	}
 
 	#[cfg(feature = "std")]
 	fn print_log(&self) {
-		log::trace!("pre-prepare: {:?}", self.preprepare_hash);
+		log::trace!("pre-prepare: {:?}", self.target);
 		for i in self.prepare.iter() {
 			log::trace!("  {:?}", i);
 		}
@@ -456,11 +457,11 @@ where
 		log::trace!("=== end ===")
 	}
 
-	fn count_prepare(&self) -> usize {
+	fn count_prepares(&self) -> usize {
 		self.prepare.len()
 	}
 
-	fn count_commit(&self) -> usize {
+	fn count_commits(&self) -> usize {
 		self.commit.len()
 	}
 }

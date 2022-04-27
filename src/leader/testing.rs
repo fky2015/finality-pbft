@@ -98,7 +98,7 @@ pub mod environment {
 			communicate::{RoundData, VoterData},
 			Callback, Environment, GlobalMessageIn, GlobalMessageOut,
 		},
-		Error, Message, SignedMessage,
+		Error, FinalizedCommit, Message, SignedMessage,
 	};
 
 	use super::*;
@@ -414,17 +414,18 @@ pub mod environment {
 
 		fn finalize_block(
 			&self,
+			view: u64,
 			hash: Self::Hash,
 			number: Self::Number,
-			// commit: Message::Commit,
-		) -> bool {
+			f_commit: FinalizedCommit<Self::Number, Self::Hash, Self::Signature, Self::Id>,
+		) -> Result<(), Self::Error> {
 			log::trace!("{:?} finalize_block", self.local_id);
 			self.chain.lock().finalize_block(hash);
 			for i in self.listeners.lock().iter() {
 				i.unbounded_send((hash, number)).unwrap();
 			}
 
-			true
+			Ok(())
 		}
 
 		fn preprepare(&self, _view: u64) -> (Self::Hash, Self::Number) {

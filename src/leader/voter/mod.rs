@@ -194,14 +194,27 @@ pub(crate) mod helper {
 	}
 }
 
+type FinalizedNotification<E> = (
+	<E as Environment>::Hash,
+	<E as Environment>::Number,
+	u64,
+	FinalizedCommit<
+		<E as Environment>::Number,
+		<E as Environment>::Hash,
+		<E as Environment>::Signature,
+		<E as Environment>::Id,
+	>,
+);
+
 pub struct Voter<E: Environment, GlobalIn, GlobalOut> {
 	local_id: E::Id,
 	env: Arc<E>,
 	voters: VoterSet<E::Id>,
+	inner: Option<(ViewRound<E>, E::In)>,
+	// finalized_notifications: UnboundedReceiver<FinalizedNotification<E>>,
 	global_incoming: GlobalIn,
 	global_outgoing: GlobalOut,
 	// TODO: consider wrap this around sth.
-	inner: Option<(ViewRound<E>, E::In)>,
 	last_finalized_number: E::Number,
 	current_view_number: u64,
 }
@@ -220,6 +233,7 @@ where
 		current_view_number: u64,
 		last_round_base: (E::Hash, E::Number),
 	) -> Self {
+		// let (finalized_sender, finalized_notifications) = mpsc::unbounded();
 		let voter_data = env.voter_data();
 		Self {
 			local_id: voter_data.local_id,
@@ -438,6 +452,7 @@ pub mod report {
 /// Including network, storage and other info (that cannot get directly via consensus algo).
 use std::collections::HashMap;
 
+use futures::channel::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use futures::{Future, FutureExt, Sink, SinkExt, Stream, TryStreamExt};
 use futures_timer::Delay;
 use parking_lot::Mutex;
@@ -447,7 +462,7 @@ use crate::BlockNumberOps;
 
 use super::{
 	CatchUp, CommitValidationResult, CompactCommit, CurrentState, Error, FinalizedCommit, Message,
-	SignedMessage, Storage, VoterSet,
+	SignedCommit, SignedMessage, Storage, VoterSet,
 };
 
 /// Necessary environment for a voter.
@@ -493,10 +508,11 @@ pub trait Environment {
 	// TODO: maybe async?
 	fn finalize_block(
 		&self,
+		view: u64,
 		hash: Self::Hash,
 		number: Self::Number,
-		// commit: Message::Commit,
-	) -> bool;
+		f_commit: FinalizedCommit<Self::Number, Self::Hash, Self::Signature, Self::Id>,
+	) -> Result<(), Self::Error>;
 }
 
 pub struct Logger<E>
@@ -521,12 +537,13 @@ pub struct ViewRound<E: Environment> {
 	env: Arc<E>,
 	voter_set: VoterSet<E::Id>,
 	current_state: CurrentState,
-	message_log: Arc<Mutex<Storage<E::Number, E::Hash, E::Id>>>,
+	message_log: Arc<Mutex<Storage<E::Number, E::Hash, E::Signature, E::Id>>>,
 	view: u64,
 	current_height: E::Number,
 	id: E::Id,
 	// incoming: E::In,
 	outgoing: E::Out,
+	// finalized_sender: UnboundedSender<FinalizedNotification<E>>,
 }
 
 impl<E> ViewRound<E>
@@ -551,7 +568,6 @@ where
 			message_log: Arc::new(Mutex::new(Storage::new())),
 			current_height,
 			id: voter_id,
-			// incoming: round_data.incoming,
 			// TODO: why bufferd
 			outgoing,
 		}
@@ -564,14 +580,14 @@ where
 
 	async fn process_incoming(
 		incoming: &mut E::In,
-		log: Arc<Mutex<Storage<E::Number, E::Hash, E::Id>>>,
+		log: Arc<Mutex<Storage<E::Number, E::Hash, E::Signature, E::Id>>>,
 	) -> Result<(), E::Error> {
 		// FIXME: optimize
 		log::trace!("start of process_incoming");
 		while let Some(msg) = incoming.try_next().await? {
 			log::trace!("process_incoming: {:?}", msg);
-			let SignedMessage { message, .. } = msg;
-			log.lock().save_message(msg.id, message);
+			let SignedMessage { message, signature, id } = msg;
+			log.lock().save_message(id, message, signature);
 		}
 
 		log::trace!("end of process_incoming");
@@ -603,7 +619,7 @@ where
 		log::trace!("{:?} preprepare_hash: {:?}", self.id, hash);
 
 		self.current_height = height;
-		self.message_log.lock().preprepare_hash = Some(hash.clone());
+		self.message_log.lock().target = Some(hash.clone());
 
 		let preprepare = PrePrepare::new(self.view, height, hash);
 		self.multicast(Message::PrePrepare(preprepare)).await?;
@@ -628,7 +644,7 @@ where
 		let prepare_msg = Message::Prepare(Prepare::new(
 			self.view,
 			self.current_height,
-			self.message_log.lock().preprepare_hash.clone().unwrap().clone(),
+			self.message_log.lock().target.clone().unwrap().clone(),
 		));
 
 		self.multicast(prepare_msg).await?;
@@ -650,7 +666,7 @@ where
 		let commit = Commit::new(
 			self.view,
 			self.current_height,
-			self.message_log.lock().preprepare_hash.clone().unwrap().clone(),
+			self.message_log.lock().target.clone().unwrap().clone(),
 		);
 
 		let commit_msg = Message::Commit(commit);
@@ -663,20 +679,39 @@ where
 	}
 
 	fn validate_prepare(&mut self) -> bool {
-		let c = self.message_log.lock().count_prepare();
+		let c = self.message_log.lock().count_prepares();
 		if helper::supermajority(self.voter_set.len().get(), c) {
 			self.change_state(CurrentState::Commit)
 		}
 		true
 	}
 
-	fn validate_commit(&mut self) -> bool {
-		let c = self.message_log.lock().count_commit();
+	fn validate_commit(
+		&mut self,
+	) -> Option<FinalizedCommit<E::Number, E::Hash, E::Signature, E::Id>> {
+		let c = self.message_log.lock().count_commits();
 		if helper::supermajority(self.voter_set.len().get(), c) {
 			self.change_state(CurrentState::PrePrepare);
-			return true;
+
+			let f_commit = FinalizedCommit {
+				target_hash: self.message_log.lock().target.clone().unwrap(),
+				target_number: self.current_height,
+				commits: self
+					.message_log
+					.lock()
+					.commit
+					.iter()
+					.map(|(id, (commit, sig))| SignedCommit {
+						commit: commit.clone(),
+						signature: sig.clone(),
+						id: id.clone(),
+					})
+					.collect(),
+			};
+
+			return Some(f_commit);
 		}
-		false
+		None
 	}
 
 	async fn multicast(&mut self, msg: Message<E::Number, E::Hash>) -> Result<(), E::Error> {
@@ -701,14 +736,14 @@ where
 		// preprepare
 		self.preprepare().await?;
 
-		if self.message_log.lock().preprepare_hash.is_none() {
+		if self.message_log.lock().target.is_none() {
 			return self.primary_alive();
 		}
 
 		let hash = self
 			.message_log
 			.lock()
-			.preprepare_hash
+			.target
 			.clone()
 			.expect("We've already check this value in advance; qed");
 
@@ -720,9 +755,9 @@ where
 		// commit
 		self.commit().await?;
 
-		if self.validate_commit() {
+		if let Some(f_commit) = self.validate_commit() {
 			log::trace!("{:?} in view {} valid commit", self.id, self.view);
-			self.env.finalize_block(hash, self.current_height);
+			self.env.finalize_block(self.view, hash, self.current_height, f_commit);
 		}
 
 		log::trace!("{:?} ViewRound::END {:?}", self.id, self.view);
