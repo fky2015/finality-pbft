@@ -332,7 +332,7 @@ impl<Id> ViewChange<Id> {
 }
 
 #[cfg_attr(any(feature = "std", test), derive(Debug))]
-#[derive(PartialEq, Eq, Clone)]
+#[derive(PartialEq, Eq, Clone, Copy)]
 pub enum CurrentState {
 	// Initial state.
 	PrePrepare,
@@ -370,6 +370,8 @@ where
 /// similar to: [`round::Round`]
 #[cfg_attr(any(feature = "std", test), derive(Debug))]
 struct Storage<N, D, S, Id> {
+	current_state: CurrentState,
+	target_height: N,
 	target: Option<D>,
 	preprepare: BTreeMap<Id, (PrePrepare<N, D>, S)>,
 	prepare: BTreeMap<Id, (Prepare<N, D>, S)>,
@@ -400,8 +402,10 @@ where
 	H: std::fmt::Debug,
 	N: std::fmt::Debug,
 {
-	fn new() -> Self {
+	fn new(target_height: N) -> Self {
 		Self {
+			target_height,
+			current_state: CurrentState::PrePrepare,
 			target: None,
 			preprepare: Default::default(),
 			prepare: Default::default(),

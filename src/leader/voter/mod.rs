@@ -210,13 +210,37 @@ pub struct Voter<E: Environment, GlobalIn, GlobalOut> {
 	local_id: E::Id,
 	env: Arc<E>,
 	voters: VoterSet<E::Id>,
-	inner: Option<(ViewRound<E>, E::In)>,
+	inner: Arc<Mutex<InnerVoterState<E>>>,
 	// finalized_notifications: UnboundedReceiver<FinalizedNotification<E>>,
 	global_incoming: GlobalIn,
 	global_outgoing: GlobalOut,
 	// TODO: consider wrap this around sth.
 	last_finalized_number: E::Number,
 	current_view_number: u64,
+}
+
+// QUESTION: why 'a
+impl<'a, E: 'a, GlobalIn, GlobalOut> Voter<E, GlobalIn, GlobalOut>
+where
+	E: Environment + Sync + Send,
+	GlobalIn: Stream<Item = Result<GlobalMessageIn<E::Hash, E::Number, E::Signature, E::Id>, E::Error>>
+		+ Unpin,
+	GlobalOut:
+		Sink<GlobalMessageOut<E::Hash, E::Number, E::Signature, E::Id>, Error = E::Error> + Unpin,
+{
+	/// Returns an object allowing to query the voter state.
+	pub fn voter_state(&self) -> Box<dyn VoterState<E::Hash, E::Id> + 'a + Send + Sync>
+	where
+		<E as Environment>::Signature: Send,
+		<E as Environment>::Id: std::hash::Hash + Send,
+		<E as Environment>::Timer: Send,
+		<E as Environment>::Out: Send,
+		<E as Environment>::In: Send,
+		<E as Environment>::Number: Send,
+		<E as Environment>::Hash: Send,
+	{
+		Box::new(SharedVoterState(self.inner.clone()))
+	}
 }
 
 impl<E: Environment, GlobalIn, GlobalOut> Voter<E, GlobalIn, GlobalOut>
@@ -235,6 +259,10 @@ where
 	) -> Self {
 		// let (finalized_sender, finalized_notifications) = mpsc::unbounded();
 		let voter_data = env.voter_data();
+
+		let best_view =
+			ViewRound::new(current_view_number, last_round_base.1, voters.clone(), env.clone());
+
 		Self {
 			local_id: voter_data.local_id,
 			env: env.clone(),
@@ -242,35 +270,29 @@ where
 			global_incoming: global_comms.0,
 			global_outgoing: global_comms.1,
 			last_finalized_number: last_round_base.1,
-			inner: None,
+			inner: Arc::new(Mutex::new(InnerVoterState { best_view })),
 			current_view_number,
 		}
 	}
 
-	pub fn new_view_round(&self) -> (ViewRound<E>, E::In) {
+	pub fn new_view_round(&self) -> ViewRound<E> {
 		let voter_set = self.voters.clone();
-		let round_data = self.env.round_data(self.current_view_number);
-		(
-			ViewRound::new(
-				self.current_view_number,
-				self.last_finalized_number,
-				voter_set,
-				self.env.clone(),
-				round_data.voter_id,
-				round_data.outgoing,
-			),
-			round_data.incoming,
+		ViewRound::new(
+			self.current_view_number,
+			self.last_finalized_number,
+			voter_set,
+			self.env.clone(),
 		)
 	}
 
-	pub async fn process_voting_round(
-		inner_incoming: &mut E::In,
-		inner: &mut ViewRound<E>,
-	) -> Result<(), E::Error> {
+	pub async fn process_voting_round(view_round: &mut ViewRound<E>) -> Result<(), E::Error> {
+		let mut inner_incoming = view_round.incoming.take().expect("inner_incoming must exist.");
+		let message_log = view_round.message_log.clone();
+
 		// FIXME: optimize
-		log::trace!("{:?} process_voting_round {:?}", inner.id, inner.view);
-		let a = ViewRound::<E>::process_incoming(inner_incoming, inner.message_log.clone()).fuse();
-		let b = inner.progress().fuse();
+		// log::trace!("{:?} process_voting_round {:?}", inner.id, inner.view);
+		let a = ViewRound::<E>::process_incoming(&mut inner_incoming, message_log).fuse();
+		let b = view_round.progress().fuse();
 
 		futures::pin_mut!(a, b);
 
@@ -342,7 +364,7 @@ where
 		log::trace!("{:?} Voter::run", self.local_id);
 
 		loop {
-			let (mut view_round, mut incoming) = self.new_view_round();
+			let mut best_view = self.inner.lock().best_view.take_clone();
 
 			// NOTE: this is a hack to make sure new network is activated, by sending a empty
 			// mesage to the network.
@@ -354,11 +376,8 @@ where
 
 			// run both global_incoming and view_round
 			// wait one of them return
-			let result = Voter::<E, GlobalIn, GlobalOut>::process_voting_round(
-				&mut incoming,
-				&mut view_round,
-			)
-			.await;
+			let result =
+				Voter::<E, GlobalIn, GlobalOut>::process_voting_round(&mut best_view).await;
 
 			// restart new voting round.
 			log::trace!("{:?} current voting round finish: {:?}", self.local_id, result);
@@ -376,6 +395,9 @@ where
 				.unwrap();
 				self.current_view_number = new_view;
 			}
+
+            // Initiate a new view round.
+			self.inner.lock().best_view = self.new_view_round();
 		}
 	}
 
@@ -422,13 +444,11 @@ pub mod report {
 	#[derive(Clone, Debug, PartialEq, Eq)]
 	pub struct ViewState<Hash, Id: Eq + std::hash::Hash> {
 		pub state: CurrentState,
-		pub total_number: usize,
+		pub total_voters: usize,
 		pub threshold: usize,
 		pub preprepare_hash: Option<Hash>,
-		pub prepare_count: usize,
 		/// The identities of nodes that have cast prepare so far.
 		pub prepare_ids: HashSet<Id>,
-		pub commit_count: usize,
 		pub commit_ids: HashSet<Id>,
 	}
 
@@ -447,18 +467,72 @@ pub mod report {
 	}
 }
 
+// The inner state of a voter aggregating the currently running round state
+// (i.e. best and background rounds). This state exists separately since it's
+// useful to wrap in a `Arc<Mutex<_>>` for sharing.
+pub struct InnerVoterState<E>
+where
+	// H: Clone + Ord + std::fmt::Debug,
+	// N: BlockNumberOps,
+	E: Environment,
+{
+	best_view: ViewRound<E>,
+	// past_views: PastRounds<H, N, E>,
+}
+
+struct SharedVoterState<E>(Arc<Mutex<InnerVoterState<E>>>)
+where
+	// H: Clone + Ord + std::fmt::Debug,
+	// N: BlockNumberOps,
+	E: Environment;
+
+impl<E> VoterState<E::Hash, E::Id> for SharedVoterState<E>
+where
+	// H: Clone + Eq + Ord + std::fmt::Debug,
+	// N: BlockNumberOps,
+	E: Environment,
+	// <E as Environment>::Id: Hash,
+{
+	fn get(&self) -> report::VoterState<E::Hash, E::Id> {
+		let to_view_state = |view_round: &ViewRound<E>| {
+			let preprepare_hash = view_round.message_log.lock().target.clone();
+			let prepare_ids = view_round.message_log.lock().prepare.keys().cloned().collect();
+			let commit_ids = view_round.message_log.lock().commit.keys().cloned().collect();
+			let state = view_round.message_log.lock().current_state;
+			(
+				view_round.view,
+				report::ViewState {
+					state,
+					total_voters: view_round.voter_set.len().get(),
+					threshold: view_round.voter_set.threshould,
+					preprepare_hash,
+					prepare_ids,
+					commit_ids,
+				},
+			)
+		};
+
+		let inner = self.0.lock();
+		let best_view = to_view_state(&inner.best_view);
+		// let background_rounds = inner.past_rounds.voting_rounds().map(to_round_state).collect();
+
+		report::VoterState { best_view, background_views: HashMap::new() }
+	}
+}
+
 /// Environment for consensus.
 ///
 /// Including network, storage and other info (that cannot get directly via consensus algo).
 use std::collections::HashMap;
 
-use futures::channel::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use futures::{Future, FutureExt, Sink, SinkExt, Stream, TryStreamExt};
 use futures_timer::Delay;
 use parking_lot::Mutex;
 
 use crate::leader::{Commit, PrePrepare, Prepare, ViewChange};
 use crate::BlockNumberOps;
+
+use self::communicate::RoundData;
 
 use super::{
 	CatchUp, CommitValidationResult, CompactCommit, CurrentState, Error, FinalizedCommit, Message,
@@ -536,13 +610,11 @@ where
 pub struct ViewRound<E: Environment> {
 	env: Arc<E>,
 	voter_set: VoterSet<E::Id>,
-	current_state: CurrentState,
 	message_log: Arc<Mutex<Storage<E::Number, E::Hash, E::Signature, E::Id>>>,
 	view: u64,
-	current_height: E::Number,
 	id: E::Id,
-	// incoming: E::In,
-	outgoing: E::Out,
+	incoming: Option<E::In>,
+	outgoing: Option<E::Out>,
 	// finalized_sender: UnboundedSender<FinalizedNotification<E>>,
 }
 
@@ -554,28 +626,38 @@ where
 	pub fn new(
 		view: u64,
 		current_height: E::Number,
-		// preprepare_hash: H,
 		voter_set: VoterSet<E::Id>,
 		env: Arc<E>,
-		voter_id: E::Id,
-		outgoing: E::Out,
 	) -> Self {
+		let RoundData { voter_id, incoming, outgoing, .. } = env.round_data(view);
+
 		ViewRound {
 			env,
 			view,
 			voter_set,
-			current_state: CurrentState::PrePrepare,
-			message_log: Arc::new(Mutex::new(Storage::new())),
-			current_height,
+			message_log: Arc::new(Mutex::new(Storage::new(current_height))),
 			id: voter_id,
+			incoming: Some(incoming),
 			// TODO: why bufferd
-			outgoing,
+			outgoing: Some(outgoing),
 		}
 	}
 
-	fn change_state(&mut self, state: CurrentState) {
+	fn take_clone(&mut self) -> Self {
+		ViewRound {
+			env: self.env.clone(),
+			voter_set: self.voter_set.clone(),
+			message_log: self.message_log.clone(),
+			view: self.view,
+			id: self.id.clone(),
+			incoming: self.incoming.take(),
+			outgoing: self.outgoing.take(),
+		}
+	}
+
+	fn change_state(&self, state: CurrentState) {
 		// TODO: push log
-		self.current_state = state;
+		self.message_log.lock().current_state = state;
 	}
 
 	async fn process_incoming(
@@ -611,6 +693,10 @@ where
 		true
 	}
 
+	fn update_current_height(&self, h: E::Number) {
+		self.message_log.lock().target_height = h;
+	}
+
 	async fn preprepare(&mut self) -> Result<(), E::Error> {
 		const DELAY_PRE_PREPARE_MILLI: u64 = 1000;
 
@@ -618,7 +704,7 @@ where
 		let (hash, height) = self.env.preprepare(self.view);
 		log::trace!("{:?} preprepare_hash: {:?}", self.id, hash);
 
-		self.current_height = height;
+		self.update_current_height(height);
 		self.message_log.lock().target = Some(hash.clone());
 
 		let preprepare = PrePrepare::new(self.view, height, hash);
@@ -637,13 +723,13 @@ where
 		const DELAY_PREPARE_MILLI: u64 = 1000;
 
 		// TODO: currently, change state without condition.
-		if self.current_state == CurrentState::PrePrepare {
-			self.change_state(CurrentState::Prepare);
-		}
+		self.change_state(CurrentState::Prepare);
+
+		let height = self.message_log.lock().target_height;
 
 		let prepare_msg = Message::Prepare(Prepare::new(
 			self.view,
-			self.current_height,
+			height,
 			self.message_log.lock().target.clone().unwrap().clone(),
 		));
 
@@ -659,15 +745,12 @@ where
 		log::trace!("{:?} start commit", self.id);
 		const DELAY_COMMIT_MILLI: u64 = 1000;
 
-		if self.current_state == CurrentState::Prepare {
-			self.validate_prepare();
-		}
+		self.validate_prepare();
 
-		let commit = Commit::new(
-			self.view,
-			self.current_height,
-			self.message_log.lock().target.clone().unwrap().clone(),
-		);
+		let height = self.message_log.lock().target_height;
+
+		let commit =
+			Commit::new(self.view, height, self.message_log.lock().target.clone().unwrap().clone());
 
 		let commit_msg = Message::Commit(commit);
 
@@ -694,6 +777,7 @@ where
 			self.change_state(CurrentState::PrePrepare);
 
 			let target_hash = self.message_log.lock().target.clone().unwrap();
+			let target_height = self.message_log.lock().target_height;
 			let commits = self
 				.message_log
 				.lock()
@@ -706,8 +790,7 @@ where
 				})
 				.collect();
 
-			let f_commit =
-				FinalizedCommit { target_hash, target_number: self.current_height, commits };
+			let f_commit = FinalizedCommit { target_hash, target_number: target_height, commits };
 
 			return Some(f_commit);
 		}
@@ -717,7 +800,7 @@ where
 
 	async fn multicast(&mut self, msg: Message<E::Number, E::Hash>) -> Result<(), E::Error> {
 		log::trace!("{:?} multicast message: {:?}", self.id, msg);
-		self.outgoing.send(msg).await
+		self.outgoing.as_mut().unwrap().send(msg).await
 	}
 
 	fn primary_alive(&self) -> Result<(), E::Error> {
@@ -758,7 +841,8 @@ where
 
 		if let Some(f_commit) = self.validate_commit() {
 			log::trace!("{:?} in view {} valid commit", self.id, self.view);
-			self.env.finalize_block(self.view, hash, self.current_height, f_commit);
+			let target_height = self.message_log.lock().target_height;
+			let _ = self.env.finalize_block(self.view, hash, target_height, f_commit);
 		}
 
 		log::trace!("{:?} ViewRound::END {:?}", self.id, self.view);
