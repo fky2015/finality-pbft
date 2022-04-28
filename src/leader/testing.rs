@@ -399,14 +399,14 @@ pub mod environment {
 			VoterData { local_id: self.local_id }
 		}
 
-		fn round_data(&self, view: u64) -> RoundData<Self::Id, Self::Timer, Self::In, Self::Out> {
+		fn round_data(&self, view: u64) -> RoundData<Self::Id, Self::In, Self::Out> {
 			log::trace!("{:?} round_data view: {}", self.local_id, view);
 			const GOSSIP_DURATION: Duration = Duration::from_millis(500);
 
 			let (incomming, outgoing) = self.network.make_round_comms(view, self.local_id);
 			RoundData {
 				voter_id: self.local_id,
-				prevote_timer: Box::new(Delay::new(GOSSIP_DURATION).map(Ok)),
+				// prevote_timer: Box::new(Delay::new(GOSSIP_DURATION).map(Ok)),
 				incoming: Box::new(incomming),
 				outgoing: Box::pin(outgoing),
 			}

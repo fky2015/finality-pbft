@@ -396,7 +396,7 @@ where
 				self.current_view_number = new_view;
 			}
 
-            // Initiate a new view round.
+			// Initiate a new view round.
 			self.inner.lock().best_view = self.new_view_round();
 		}
 	}
@@ -420,12 +420,12 @@ pub mod communicate {
 	}
 
 	/// Data necessary to participate in a round.
-	pub struct RoundData<Id, Timer, Input, Output> {
+	pub struct RoundData<Id, Input, Output> {
 		/// Local voter id
 		pub voter_id: Id,
-		/// Timer before prevotes can be cast. This should be Start + 2T
-		/// where T is the gossip time estimate.
-		pub prevote_timer: Timer,
+		// Timer before prevotes can be cast. This should be Start + 2T
+		// where T is the gossip time estimate.
+		// pub prevote_timer: Timer,
 		/// Timer before precommits can be cast. This should be Start + 4T
 		// pub precommit_timer: Timer,
 		/// Incoming messages.
@@ -570,10 +570,7 @@ pub trait Environment {
 	fn voter_data(&self) -> communicate::VoterData<Self::Id>;
 
 	/// Get round data.
-	fn round_data(
-		&self,
-		view: u64,
-	) -> communicate::RoundData<Self::Id, Self::Timer, Self::In, Self::Out>;
+	fn round_data(&self, view: u64) -> communicate::RoundData<Self::Id, Self::In, Self::Out>;
 
 	/// preprepare
 	fn preprepare(&self, view: u64) -> (Self::Hash, Self::Number);
