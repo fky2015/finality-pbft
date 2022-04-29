@@ -20,14 +20,14 @@ pub mod chain {
 	#[derive(Debug)]
 	pub struct DummyChain {
 		inner: BTreeMap<Hash, BlockRecord>,
-		finalized: (Hash, BlockNumber),
+		finalized: (BlockNumber, Hash),
 	}
 
 	impl DummyChain {
 		pub fn new() -> Self {
 			let mut inner = BTreeMap::new();
 			inner.insert(GENESIS_HASH, BlockRecord { number: 1, parent: NULL_HASH });
-			DummyChain { inner, finalized: (GENESIS_HASH, 1) }
+			DummyChain { inner, finalized: (1, GENESIS_HASH) }
 		}
 
 		pub fn push_blocks(&mut self, mut parent: Hash, blocks: &[Hash]) {
@@ -46,15 +46,15 @@ pub mod chain {
 			self.inner.insert(block, BlockRecord { number: block_number, parent });
 		}
 
-		pub fn last_finalized(&self) -> (Hash, BlockNumber) {
+		pub fn last_finalized(&self) -> (BlockNumber, Hash) {
 			self.finalized
 		}
 
 		/// Get block after the last finalized block
-		pub fn next_to_be_finalized(&self) -> Result<(Hash, BlockNumber), ()> {
+		pub fn next_to_be_finalized(&self) -> Result<(BlockNumber, Hash), ()> {
 			for (hash, record) in self.inner.iter().rev() {
-				if record.number == self.finalized.1 + 1 {
-					return Ok((hash.clone(), record.number));
+				if record.number == self.finalized.0 + 1 {
+					return Ok((record.number, hash.clone()));
 				}
 			}
 
@@ -68,7 +68,7 @@ pub mod chain {
 				#[cfg(feature = "std")]
 				log::trace!("finalize block: {:?}", b);
 				if self.inner.get(&b.parent).map(|p| p.number + 1 == b.number).unwrap_or(false) {
-					self.finalized = (block, b.number);
+					self.finalized = (b.number, block);
 					#[cfg(feature = "std")]
 					log::trace!("new finalized = {:?}", self.finalized);
 					return true;
@@ -386,7 +386,7 @@ pub mod environment {
 		type Id = Id;
 		type Signature = Signature;
 		type BestChain = Box<
-			dyn Future<Output = Result<Option<(Self::Hash, Self::Number)>, Error>> + Unpin + Send,
+			dyn Future<Output = Result<Option<(Self::Number, Self::Hash)>, Error>> + Unpin + Send,
 		>;
 		type In = Box<
 			dyn Stream<Item = Result<SignedMessage<BlockNumber, Hash, Signature, Id>, Error>>
@@ -431,7 +431,7 @@ pub mod environment {
 			Ok(())
 		}
 
-		fn preprepare(&self, _view: u64) -> Self::BestChain {
+		fn preprepare(&self, _view: u64, _block: Self::Hash) -> Self::BestChain {
 			Box::new(futures::future::ok(Some(self.with_chain(|chain| {
 				log::info!(
 					"chain: {:?}, last_finalized: {:?}, next_to_be_finalized: {:?}",

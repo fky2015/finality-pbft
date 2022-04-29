@@ -215,7 +215,7 @@ pub struct Voter<E: Environment, GlobalIn, GlobalOut> {
 	global_incoming: GlobalIn,
 	global_outgoing: GlobalOut,
 	// TODO: consider wrap this around sth.
-	last_finalized_number: E::Number,
+	last_finalized_target: (E::Number, E::Hash),
 	current_view_number: u64,
 }
 
@@ -255,13 +255,17 @@ where
 		voters: VoterSet<E::Id>,
 		global_comms: (GlobalIn, GlobalOut),
 		current_view_number: u64,
-		last_round_base: (E::Hash, E::Number),
+		last_round_base: (E::Number, E::Hash),
 	) -> Self {
 		// let (finalized_sender, finalized_notifications) = mpsc::unbounded();
 		let voter_data = env.voter_data();
 
-		let best_view =
-			ViewRound::new(current_view_number, last_round_base.1, voters.clone(), env.clone());
+		let best_view = ViewRound::new(
+			current_view_number,
+			last_round_base.clone(),
+			voters.clone(),
+			env.clone(),
+		);
 
 		Self {
 			local_id: voter_data.local_id,
@@ -269,7 +273,7 @@ where
 			voters,
 			global_incoming: global_comms.0,
 			global_outgoing: global_comms.1,
-			last_finalized_number: last_round_base.1,
+			last_finalized_target: last_round_base,
 			inner: Arc::new(Mutex::new(InnerVoterState { best_view })),
 			current_view_number,
 		}
@@ -279,13 +283,15 @@ where
 		let voter_set = self.voters.clone();
 		ViewRound::new(
 			self.current_view_number,
-			self.last_finalized_number,
+			self.last_finalized_target.clone(),
 			voter_set,
 			self.env.clone(),
 		)
 	}
 
-	pub async fn process_voting_round(view_round: &mut ViewRound<E>) -> Result<(), E::Error> {
+	pub async fn process_voting_round(
+		view_round: &mut ViewRound<E>,
+	) -> Result<(E::Number, E::Hash), E::Error> {
 		let mut inner_incoming = view_round.incoming.take().expect("inner_incoming must exist.");
 		let message_log = view_round.message_log.clone();
 
@@ -299,7 +305,7 @@ where
 		futures::select! {
 			a = a => {
 				log::trace!("a ready {:?}", a);
-				a
+				Err(super::Error::IncomingClosed.into())
 			}
 			b = b => {
 				log::trace!("b ready {:?}", b);
@@ -394,6 +400,8 @@ where
 				.await
 				.unwrap();
 				self.current_view_number = new_view;
+			} else {
+				self.last_finalized_target = result.unwrap();
 			}
 
 			// Initiate a new view round.
@@ -495,7 +503,7 @@ where
 {
 	fn get(&self) -> report::VoterState<E::Hash, E::Id> {
 		let to_view_state = |view_round: &ViewRound<E>| {
-			let preprepare_hash = view_round.message_log.lock().target.clone();
+			let preprepare = view_round.message_log.lock().target.clone();
 			let prepare_ids = view_round.message_log.lock().prepare.keys().cloned().collect();
 			let commit_ids = view_round.message_log.lock().commit.keys().cloned().collect();
 			let state = view_round.message_log.lock().current_state;
@@ -505,7 +513,7 @@ where
 					state,
 					total_voters: view_round.voter_set.len().get(),
 					threshold: view_round.voter_set.threshould,
-					preprepare_hash,
+					preprepare_hash: preprepare.map(|(n, h)| h),
 					prepare_ids,
 					commit_ids,
 				},
@@ -552,7 +560,7 @@ pub trait Environment {
 	type Signature: Eq + Clone + core::fmt::Debug;
 	/// Associated future type for the environment used when asynchronously computing the
 	/// best chain to vote on. See also [`Self::best_chain_containing`].
-	type BestChain: Future<Output = Result<Option<(Self::Hash, Self::Number)>, Self::Error>>
+	type BestChain: Future<Output = Result<Option<(Self::Number, Self::Hash)>, Self::Error>>
 		+ Send
 		+ Unpin;
 	/// The input stream used to communicate with the outside world.
@@ -578,7 +586,7 @@ pub trait Environment {
 	fn round_data(&self, view: u64) -> communicate::RoundData<Self::Id, Self::In, Self::Out>;
 
 	/// preprepare
-	fn preprepare(&self, view: u64) -> Self::BestChain;
+	fn preprepare(&self, view: u64, block: Self::Hash) -> Self::BestChain;
 
 	/// Finalize a block.
 	// TODO: maybe async?
@@ -627,7 +635,7 @@ where
 	// TODO: maybe delete some fields?
 	pub fn new(
 		view: u64,
-		current_height: E::Number,
+		last_round_base: (E::Number, E::Hash),
 		voter_set: VoterSet<E::Id>,
 		env: Arc<E>,
 	) -> Self {
@@ -637,7 +645,7 @@ where
 			env,
 			view,
 			voter_set,
-			message_log: Arc::new(Mutex::new(Storage::new(current_height))),
+			message_log: Arc::new(Mutex::new(Storage::new(last_round_base))),
 			id: voter_id,
 			incoming: Some(incoming),
 			// TODO: why bufferd
@@ -695,19 +703,20 @@ where
 		true
 	}
 
-	fn update_current_height(&self, h: E::Number) {
-		self.message_log.lock().target_height = h;
+	fn update_current_target(&self, target: (E::Number, E::Hash)) {
+		self.message_log.lock().target = Some(target);
 	}
 
 	async fn preprepare(&mut self) -> Result<(), E::Error> {
 		const DELAY_PRE_PREPARE_MILLI: u64 = 1000;
 
+		let last_round_base = self.message_log.lock().last_round_base.clone();
+
 		// get preprepare hash
-		let (hash, height) = self.env.preprepare(self.view).await?.unwrap();
+		let (height, hash) = self.env.preprepare(self.view, last_round_base.1).await?.unwrap();
 		log::trace!("{:?} preprepare_hash: {:?}", self.id, hash);
 
-		self.update_current_height(height);
-		self.message_log.lock().target = Some(hash.clone());
+		self.update_current_target((height, hash.clone()));
 
 		let preprepare = PrePrepare::new(self.view, height, hash);
 		self.multicast(Message::PrePrepare(preprepare)).await?;
@@ -727,13 +736,9 @@ where
 		// TODO: currently, change state without condition.
 		self.change_state(CurrentState::Prepare);
 
-		let height = self.message_log.lock().target_height;
+		let (height, hash) = self.message_log.lock().target.clone().unwrap();
 
-		let prepare_msg = Message::Prepare(Prepare::new(
-			self.view,
-			height,
-			self.message_log.lock().target.clone().unwrap().clone(),
-		));
+		let prepare_msg = Message::Prepare(Prepare::new(self.view, height, hash));
 
 		self.multicast(prepare_msg).await?;
 
@@ -749,10 +754,9 @@ where
 
 		self.validate_prepare();
 
-		let height = self.message_log.lock().target_height;
+		let (height, hash) = self.message_log.lock().target.clone().unwrap();
 
-		let commit =
-			Commit::new(self.view, height, self.message_log.lock().target.clone().unwrap().clone());
+		let commit = Commit::new(self.view, height, hash);
 
 		let commit_msg = Message::Commit(commit);
 
@@ -778,8 +782,7 @@ where
 		if helper::supermajority(self.voter_set.len().get(), c) {
 			self.change_state(CurrentState::PrePrepare);
 
-			let target_hash = self.message_log.lock().target.clone().unwrap();
-			let target_height = self.message_log.lock().target_height;
+			let (target_height, target_hash) = self.message_log.lock().target.clone().unwrap();
 			let commits = self
 				.message_log
 				.lock()
@@ -816,17 +819,18 @@ where
 			.ok_or(Error::PrimaryFailure.into())
 	}
 
-	async fn progress(&mut self) -> Result<(), E::Error> {
+	async fn progress(&mut self) -> Result<(E::Number, E::Hash), E::Error> {
 		log::trace!("{:?} ViewRound::progress, view: {}", self.id, self.view);
 
 		// preprepare
 		self.preprepare().await?;
 
 		if self.message_log.lock().target.is_none() {
-			return self.primary_alive();
+			self.primary_alive()?;
+			unreachable!();
 		}
 
-		let hash = self
+		let (height, hash) = self
 			.message_log
 			.lock()
 			.target
@@ -843,13 +847,19 @@ where
 
 		if let Some(f_commit) = self.validate_commit() {
 			log::trace!("{:?} in view {} valid commit", self.id, self.view);
-			let target_height = self.message_log.lock().target_height;
-			let _ = self.env.finalize_block(self.view, hash, target_height, f_commit);
+			let _ = self.env.finalize_block(self.view, hash, height, f_commit);
 		}
 
 		log::trace!("{:?} ViewRound::END {:?}", self.id, self.view);
 
-		self.primary_alive()
+		self.primary_alive()?;
+
+		Ok(self
+			.message_log
+			.lock()
+			.target
+			.clone()
+			.expect("We've already check this value in advance; qed"))
 	}
 }
 

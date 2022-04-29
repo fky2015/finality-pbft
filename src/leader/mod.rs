@@ -48,6 +48,7 @@ pub enum Error {
 	// NoPrePrepare,
 	/// No Primary message was received.
 	PrimaryFailure,
+	IncomingClosed,
 }
 
 #[cfg(feature = "std")]
@@ -64,6 +65,9 @@ impl std::fmt::Display for Error {
 			// },
 			Error::PrimaryFailure => {
 				write!(f, "No primary message, may need to initiate view change.")
+			},
+			Error::IncomingClosed => {
+				write!(f, "Incoming channel is closed (unexpected).")
 			},
 		}
 	}
@@ -370,9 +374,10 @@ where
 /// similar to: [`round::Round`]
 #[cfg_attr(any(feature = "std", test), derive(Debug))]
 struct Storage<N, D, S, Id> {
+	last_round_base: (N, D),
 	current_state: CurrentState,
-	target_height: N,
-	target: Option<D>,
+	// from valid preprepare msg.
+	target: Option<(N, D)>,
 	preprepare: BTreeMap<Id, (PrePrepare<N, D>, S)>,
 	prepare: BTreeMap<Id, (Prepare<N, D>, S)>,
 	commit: BTreeMap<Id, (Commit<N, D>, S)>,
@@ -402,9 +407,9 @@ where
 	H: std::fmt::Debug,
 	N: std::fmt::Debug,
 {
-	fn new(target_height: N) -> Self {
+	fn new(last_round_base: (N, H)) -> Self {
 		Self {
-			target_height,
+			last_round_base,
 			current_state: CurrentState::PrePrepare,
 			target: None,
 			preprepare: Default::default(),
