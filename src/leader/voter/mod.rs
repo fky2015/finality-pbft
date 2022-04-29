@@ -550,6 +550,11 @@ pub trait Environment {
 	type Id: Clone + Eq + std::hash::Hash + Ord + std::fmt::Debug;
 	/// The associated Signature type for the Environment.
 	type Signature: Eq + Clone + core::fmt::Debug;
+	/// Associated future type for the environment used when asynchronously computing the
+	/// best chain to vote on. See also [`Self::best_chain_containing`].
+	type BestChain: Future<Output = Result<Option<(Self::Hash, Self::Number)>, Self::Error>>
+		+ Send
+		+ Unpin;
 	/// The input stream used to communicate with the outside world.
 	type In: Stream<
 			Item = Result<
@@ -573,7 +578,7 @@ pub trait Environment {
 	fn round_data(&self, view: u64) -> communicate::RoundData<Self::Id, Self::In, Self::Out>;
 
 	/// preprepare
-	fn preprepare(&self, view: u64) -> (Self::Hash, Self::Number);
+	fn preprepare(&self, view: u64) -> Self::BestChain;
 
 	/// Finalize a block.
 	// TODO: maybe async?
@@ -698,7 +703,7 @@ where
 		const DELAY_PRE_PREPARE_MILLI: u64 = 1000;
 
 		// get preprepare hash
-		let (hash, height) = self.env.preprepare(self.view);
+		let (hash, height) = self.env.preprepare(self.view).await?.unwrap();
 		log::trace!("{:?} preprepare_hash: {:?}", self.id, hash);
 
 		self.update_current_height(height);

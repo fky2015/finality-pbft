@@ -385,6 +385,9 @@ pub mod environment {
 		type Timer = Box<dyn Future<Output = Result<(), Error>> + Unpin + Send>;
 		type Id = Id;
 		type Signature = Signature;
+		type BestChain = Box<
+			dyn Future<Output = Result<Option<(Self::Hash, Self::Number)>, Error>> + Unpin + Send,
+		>;
 		type In = Box<
 			dyn Stream<Item = Result<SignedMessage<BlockNumber, Hash, Signature, Id>, Error>>
 				+ Unpin
@@ -428,8 +431,8 @@ pub mod environment {
 			Ok(())
 		}
 
-		fn preprepare(&self, _view: u64) -> (Self::Hash, Self::Number) {
-			self.with_chain(|chain| {
+		fn preprepare(&self, _view: u64) -> Self::BestChain {
+			Box::new(futures::future::ok(Some(self.with_chain(|chain| {
 				log::info!(
 					"chain: {:?}, last_finalized: {:?}, next_to_be_finalized: {:?}",
 					chain,
@@ -437,7 +440,7 @@ pub mod environment {
 					chain.next_to_be_finalized()
 				);
 				chain.next_to_be_finalized().unwrap_or_else(|_| chain.last_finalized())
-			})
+			}))))
 		}
 	}
 }
