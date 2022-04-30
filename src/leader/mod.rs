@@ -325,8 +325,8 @@ pub struct CatchUp<N, D, S, Id> {
 #[cfg_attr(any(feature = "std", test), derive(Debug))]
 #[cfg_attr(feature = "derive-codec", derive(Encode, Decode, TypeInfo))]
 pub struct ViewChange<Id> {
-	new_view: u64,
-	id: Id,
+	pub new_view: u64,
+	pub id: Id,
 }
 
 impl<Id> ViewChange<Id> {
