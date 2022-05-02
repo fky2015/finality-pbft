@@ -304,11 +304,11 @@ where
 
 		futures::select! {
 			a = a => {
-				log::trace!("a ready {:?}", a);
+				log::trace!(target: "afp", "a ready {:?}", a);
 				Err(super::Error::IncomingClosed.into())
 			}
 			b = b => {
-				log::trace!("b ready {:?}", b);
+				log::trace!(target: "afp", "b ready {:?}", b);
 				b
 			}
 		}
@@ -324,7 +324,7 @@ where
 		const DELAY_VIEW_CHANGE_WAIT: u64 = 1000;
 		let mut new_view = current_view + 1;
 		loop {
-			log::info!("id: {:?}, start view_change: {new_view}", id);
+			log::info!(target: "afp", "id: {:?}, start view_change: {new_view}", id);
 
 			// create new view change message
 			let view_change = ViewChange::new(new_view, id.clone());
@@ -344,7 +344,7 @@ where
 						let msg = msg?.unwrap();
 						if let GlobalMessageIn::ViewChange (msg) = msg {
 							if new_view == msg.new_view {
-								log::trace!("{:?} save valid viewChange {:?}", id, msg);
+								log::trace!(target: "afp", "{:?} save valid viewChange {:?}", id, msg);
 								log.insert(msg.id.clone(), msg);
 							}
 						}
@@ -353,8 +353,8 @@ where
 			}
 
 			if log.len() >= voters.threshould() {
-				log::info!("id: {:?}, successfully view_change: {new_view}", id);
-				return Ok(new_view);
+				log::info!(target: "afp", "id: {:?}, successfully view_change: {new_view}", id);
+				return Ok(new_view)
 			} else {
 				// if primary in new view also send view change message, keep view number unchanged
 				let primary = voters.get_primary(new_view);
@@ -367,7 +367,7 @@ where
 	}
 
 	pub async fn run(&mut self) {
-		log::trace!("{:?} Voter::run", self.local_id);
+		log::trace!(target: "afp", "{:?} Voter::run", self.local_id);
 
 		loop {
 			let mut best_view = self.inner.lock().best_view.take_clone();
@@ -386,9 +386,9 @@ where
 				Voter::<E, GlobalIn, GlobalOut>::process_voting_round(&mut best_view).await;
 
 			// restart new voting round.
-			log::trace!("{:?} current voting round finish: {:?}", self.local_id, result);
+			log::trace!(target: "afp", "{:?} current voting round finish: {:?}", self.local_id, result);
 			if let Err(e) = result {
-				log::warn!("Error throw by ViewRound: {:?}", e);
+				log::warn!(target: "afp", "Error throw by ViewRound: {:?}", e);
 				// TODO: may need to change view
 				let new_view = Voter::<E, GlobalIn, GlobalOut>::change_view(
 					self.current_view_number,
@@ -537,8 +537,10 @@ use futures::{Future, FutureExt, Sink, SinkExt, Stream, TryStreamExt};
 use futures_timer::Delay;
 use parking_lot::Mutex;
 
-use crate::leader::{Commit, PrePrepare, Prepare, ViewChange};
-use crate::BlockNumberOps;
+use crate::{
+	leader::{Commit, PrePrepare, Prepare, ViewChange},
+	BlockNumberOps,
+};
 
 use self::communicate::RoundData;
 
@@ -675,14 +677,14 @@ where
 		log: Arc<Mutex<Storage<E::Number, E::Hash, E::Signature, E::Id>>>,
 	) -> Result<(), E::Error> {
 		// FIXME: optimize
-		log::trace!("start of process_incoming");
+		log::trace!(target: "afp", "start of process_incoming");
 		while let Some(msg) = incoming.try_next().await? {
-			log::trace!("process_incoming: {:?}", msg);
+			log::trace!(target: "afp", "process_incoming: {:?}", msg);
 			let SignedMessage { message, signature, id } = msg;
 			log.lock().save_message(id, message, signature);
 		}
 
-		log::trace!("end of process_incoming");
+		log::trace!(target: "afp", "end of process_incoming");
 		Ok(())
 	}
 
@@ -691,7 +693,7 @@ where
 	}
 
 	fn validate_preprepare(&mut self) -> bool {
-		log::trace!("{:?} start validate_preprepare", self.id);
+		log::trace!(target: "afp", "{:?} start validate_preprepare", self.id);
 		if self.is_primary() {
 			self.change_state(CurrentState::Prepare);
 		} else {
@@ -714,7 +716,7 @@ where
 
 		// get preprepare hash
 		let (height, hash) = self.env.preprepare(self.view, last_round_base.1).await?.unwrap();
-		log::trace!("{:?} preprepare_hash: {:?}", self.id, hash);
+		log::trace!(target: "afp", "{:?} preprepare_hash: {:?}", self.id, hash);
 
 		self.update_current_target((height, hash.clone()));
 
@@ -730,7 +732,7 @@ where
 	///
 	/// Called at end of pre-prepare or beginning of prepare.
 	async fn prepare(&mut self) -> Result<(), E::Error> {
-		log::trace!("{:?} start prepare", self.id);
+		log::trace!(target: "afp", "{:?} start prepare", self.id);
 		const DELAY_PREPARE_MILLI: u64 = 1000;
 
 		// TODO: currently, change state without condition.
@@ -743,13 +745,13 @@ where
 		self.multicast(prepare_msg).await?;
 
 		Delay::new(Duration::from_millis(DELAY_PREPARE_MILLI)).await;
-		log::trace!("{:?} end prepare", self.id);
+		log::trace!(target: "afp", "{:?} end prepare", self.id);
 		Ok(())
 	}
 
 	/// Enter Commit phase
 	async fn commit(&mut self) -> Result<(), E::Error> {
-		log::trace!("{:?} start commit", self.id);
+		log::trace!(target: "afp", "{:?} start commit", self.id);
 		const DELAY_COMMIT_MILLI: u64 = 1000;
 
 		self.validate_prepare();
@@ -763,7 +765,7 @@ where
 		self.multicast(commit_msg).await?;
 
 		Delay::new(Duration::from_millis(DELAY_COMMIT_MILLI)).await;
-		log::trace!("{:?} end commit", self.id);
+		log::trace!(target: "afp", "{:?} end commit", self.id);
 		Ok(())
 	}
 
@@ -797,20 +799,20 @@ where
 
 			let f_commit = FinalizedCommit { target_hash, target_number: target_height, commits };
 
-			return Some(f_commit);
+			return Some(f_commit)
 		}
-		log::info!("{:?} commit not enough", self.id);
+		log::info!(target: "afp", "{:?} commit not enough", self.id);
 		None
 	}
 
 	async fn multicast(&mut self, msg: Message<E::Number, E::Hash>) -> Result<(), E::Error> {
-		log::trace!("{:?} multicast message: {:?}", self.id, msg);
+		log::trace!(target: "afp", "{:?} multicast message: {:?}", self.id, msg);
 		self.outgoing.as_mut().unwrap().send(msg).await
 	}
 
 	fn primary_alive(&self) -> Result<(), E::Error> {
 		let primary = self.voter_set.get_primary(self.view);
-		log::trace!("{:?}, primary_alive: view: {}, primary: {:?}", self.id, self.view, primary);
+		log::trace!(target: "afp", "{:?}, primary_alive: view: {}, primary: {:?}", self.id, self.view, primary);
 		// TODO: .then_some(()).ok_or(Error::PrimaryFailure.into())
 		self.message_log
 			.lock()
@@ -820,7 +822,7 @@ where
 	}
 
 	async fn progress(&mut self) -> Result<(E::Number, E::Hash), E::Error> {
-		log::trace!("{:?} ViewRound::progress, view: {}", self.id, self.view);
+		log::trace!(target: "afp", "{:?} ViewRound::progress, view: {}", self.id, self.view);
 
 		// preprepare
 		self.preprepare().await?;
@@ -837,7 +839,7 @@ where
 			.clone()
 			.expect("We've already check this value in advance; qed");
 
-		log::trace!("{:?} ViewRound:: get_preprepare: {:?}", self.id, hash);
+		log::trace!(target: "afp", "{:?} ViewRound:: get_preprepare: {:?}", self.id, hash);
 
 		// prepare
 		self.prepare().await?;
@@ -846,11 +848,11 @@ where
 		self.commit().await?;
 
 		if let Some(f_commit) = self.validate_commit() {
-			log::trace!("{:?} in view {} valid commit", self.id, self.view);
+			log::trace!(target: "afp", "{:?} in view {} valid commit", self.id, self.view);
 			let _ = self.env.finalize_block(self.view, hash, height, f_commit);
 		}
 
-		log::trace!("{:?} ViewRound::END {:?}", self.id, self.view);
+		log::trace!(target: "afp", "{:?} ViewRound::END {:?}", self.id, self.view);
 
 		self.primary_alive()?;
 
@@ -1118,8 +1120,10 @@ mod tests {
 	use futures::{executor::LocalPool, task::SpawnExt, StreamExt};
 
 	use crate::leader::{
-		testing::environment::make_network,
-		testing::{chain::GENESIS_HASH, environment::DummyEnvironment},
+		testing::{
+			chain::GENESIS_HASH,
+			environment::{make_network, DummyEnvironment},
+		},
 		VoterSet,
 	};
 

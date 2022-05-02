@@ -419,9 +419,9 @@ where
 	}
 
 	fn contains_key(&self, key: &Id) -> bool {
-		self.preprepare.contains_key(key)
-			|| self.prepare.contains_key(key)
-			|| self.commit.contains_key(key)
+		self.preprepare.contains_key(key) ||
+			self.prepare.contains_key(key) ||
+			self.commit.contains_key(key)
 	}
 }
 
@@ -434,21 +434,21 @@ where
 {
 	fn save_message(&mut self, from: Id, message: Message<N, H>, signature: S) {
 		#[cfg(feature = "std")]
-		log::trace!("insert message to Storage, from: {:?}", from);
+		log::trace!(target: "afp", "insert message to Storage, from: {:?}", from);
 		match message {
 			Message::Prepare(msg) => {
 				#[cfg(feature = "std")]
-				log::trace!("insert message to Prepare, msg: {:?}", msg);
+				log::trace!(target: "afp", "insert message to Prepare, msg: {:?}", msg);
 				self.prepare.insert(from, (msg, signature));
 			},
 			Message::Commit(msg) => {
 				#[cfg(feature = "std")]
-				log::trace!("insert message to Commit, msg: {:?}", msg);
+				log::trace!(target: "afp", "insert message to Commit, msg: {:?}", msg);
 				self.commit.insert(from, (msg, signature));
 			},
 			Message::PrePrepare(msg) => {
 				#[cfg(feature = "std")]
-				log::trace!("insert message to preprepare, msg: EmptyPrePrepare");
+				log::trace!(target: "afp", "insert message to preprepare, msg: EmptyPrePrepare");
 				self.preprepare.insert(from, (msg, signature));
 			},
 		}
@@ -456,14 +456,14 @@ where
 
 	#[cfg(feature = "std")]
 	fn print_log(&self) {
-		log::trace!("pre-prepare: {:?}", self.target);
+		log::trace!(target: "afp", "pre-prepare: {:?}", self.target);
 		for i in self.prepare.iter() {
-			log::trace!("  {:?}", i);
+			log::trace!(target: "afp", "  {:?}", i);
 		}
 		for i in self.commit.iter() {
-			log::trace!("  {:?}", i);
+			log::trace!(target: "afp", "  {:?}", i);
 		}
-		log::trace!("=== end ===")
+		log::trace!(target: "afp", "=== end ===")
 	}
 
 	fn count_prepares(&self) -> usize {

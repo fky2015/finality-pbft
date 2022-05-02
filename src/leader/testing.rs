@@ -32,7 +32,7 @@ pub mod chain {
 
 		pub fn push_blocks(&mut self, mut parent: Hash, blocks: &[Hash]) {
 			if blocks.is_empty() {
-				return;
+				return
 			}
 
 			for i in blocks {
@@ -54,7 +54,7 @@ pub mod chain {
 		pub fn next_to_be_finalized(&self) -> Result<(BlockNumber, Hash), ()> {
 			for (hash, record) in self.inner.iter().rev() {
 				if record.number == self.finalized.0 + 1 {
-					return Ok((record.number, hash.clone()));
+					return Ok((record.number, hash.clone()))
 				}
 			}
 
@@ -71,9 +71,9 @@ pub mod chain {
 					self.finalized = (b.number, block);
 					#[cfg(feature = "std")]
 					log::trace!("new finalized = {:?}", self.finalized);
-					return true;
+					return true
 				} else {
-					return false;
+					return false
 				}
 			}
 
@@ -326,13 +326,11 @@ pub mod environment {
 			let mut global = self.global.lock();
 			let f: fn(GlobalMessageOut<_, _, _, _>) -> GlobalMessageIn<_, _, _, _> = |msg| match msg
 			{
-				GlobalMessageOut::Commit(view, commit) => {
-					GlobalMessageIn::Commit(view, commit.into(), Callback::Blank)
-				},
+				GlobalMessageOut::Commit(view, commit) =>
+					GlobalMessageIn::Commit(view, commit.into(), Callback::Blank),
 
-				GlobalMessageOut::ViewChange(view_change) => {
-					GlobalMessageIn::ViewChange(view_change)
-				},
+				GlobalMessageOut::ViewChange(view_change) =>
+					GlobalMessageIn::ViewChange(view_change),
 				GlobalMessageOut::Empty => GlobalMessageIn::Empty,
 			};
 			let global_comm = global.add_node(f);
