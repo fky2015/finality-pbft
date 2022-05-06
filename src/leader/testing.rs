@@ -104,7 +104,7 @@ pub mod environment {
 	use super::*;
 	use futures::{
 		channel::mpsc::{self, UnboundedReceiver, UnboundedSender},
-		Future, FutureExt, Sink, SinkExt, Stream, StreamExt,
+		Future, Sink, SinkExt, Stream, StreamExt,
 	};
 	use futures_timer::Delay;
 	use parking_lot::Mutex;
@@ -117,24 +117,27 @@ pub mod environment {
 		receiver: UnboundedReceiver<M>,
 		raw_sender: UnboundedSender<M>,
 		/// Peer's handle to send messages to.
-		senders: Vec<UnboundedSender<M>>,
+		senders: Vec<(Id, UnboundedSender<M>)>,
 		history: Vec<M>,
+		rule: Arc<Mutex<RoutingRule>>,
 	}
 
 	impl<M: Clone + std::fmt::Debug> BroadcastNetwork<M> {
-		fn new() -> Self {
+		fn new(rule: Arc<Mutex<RoutingRule>>) -> Self {
 			let (tx, rx) = mpsc::unbounded();
 			BroadcastNetwork {
 				receiver: rx,
 				raw_sender: tx,
 				senders: Vec::new(),
 				history: Vec::new(),
+				rule,
 			}
 		}
 
 		/// Add a node to the network for a round.
 		fn add_node<N, F: Fn(N) -> M>(
 			&mut self,
+			id: Id,
 			f: F,
 		) -> (impl Stream<Item = Result<M, Error>>, impl Sink<N, Error = Error>) {
 			log::trace!("BroadcastNetwork::add_node");
@@ -152,7 +155,7 @@ pub mod environment {
 			// }
 
 			// log::trace!("add_node: tx.isclosed? {}", tx.is_closed());
-			self.senders.push(tx);
+			self.senders.push((id, tx));
 
 			log::trace!("BroadcastNetwork::add_node end.");
 			(rx.map(Ok), messages_out)
@@ -168,10 +171,12 @@ pub mod environment {
 						self.history.push(msg.clone());
 
 						log::trace!("    msg {:?}", msg);
-						// broadcast to all peer (TODO: including itself?)
-						for sender in &self.senders {
+						// Broadcast to all peers including itself.
+						for (id, sender) in &self.senders {
+							if self.rule.lock().valid_route(*id) {
+								let _res = sender.unbounded_send(msg.clone());
+							}
 							// log::trace!("route: tx.isclosed? {}", sender.is_closed());
-							let _res = sender.unbounded_send(msg.clone());
 							// log::trace!("res: {:?}", res);
 						}
 					},
@@ -182,6 +187,7 @@ pub mod environment {
 		}
 	}
 
+	// WIP
 	struct CollectorNetwork<M> {
 		receiver: UnboundedReceiver<M>,
 		raw_sender: UnboundedSender<M>,
@@ -225,13 +231,70 @@ pub mod environment {
 	type GlobalMessageNetwork = BroadcastNetwork<GlobalMessageIn<Hash, BlockNumber, Signature, Id>>;
 
 	pub(crate) fn make_network() -> (Network, NetworkRouting) {
+		let rule = Arc::new(Mutex::new(RoutingRule::new()));
+
 		let rounds = Arc::new(Mutex::new(HashMap::new()));
-		let global = Arc::new(Mutex::new(GlobalMessageNetwork::new()));
+		let global = Arc::new(Mutex::new(GlobalMessageNetwork::new(rule.clone())));
 		// let log_collector = Arc::new(Mutex::new(CollectorNetwork::new()));
 		(
-			Network { rounds: rounds.clone(), global: global.clone() },
-			NetworkRouting { rounds, global },
+			Network { rounds: rounds.clone(), global: global.clone(), rule: rule.clone() },
+			NetworkRouting { rounds, global, rule },
 		)
+	}
+
+	#[derive(Default, Copy, Clone)]
+	pub struct VoterState {
+		last_finalized: BlockNumber,
+		view_number: u64,
+	}
+
+	impl VoterState {
+		pub fn new() -> Self {
+			Self { last_finalized: 0, view_number: 0 }
+		}
+	}
+
+	type Rule = fn(&VoterState) -> bool;
+
+	#[derive(Default)]
+	pub(super) struct RoutingRule {
+		nodes: Vec<Id>,
+		state_tracker: HashMap<Id, VoterState>,
+		// TODO: DOC
+		/// key: receiver
+		/// value: Rule
+		table: HashMap<Id, Rule>,
+	}
+
+	impl RoutingRule {
+		pub fn new() -> Self {
+			Self { table: HashMap::new(), nodes: Vec::new(), state_tracker: HashMap::new() }
+		}
+
+		pub fn add_rule(&mut self, receiver: Id, rule: Rule) {
+			self.table.insert(receiver.clone(), rule);
+		}
+
+		pub fn update_state(&mut self, id: Id, state: VoterState) {
+			self.state_tracker.insert(id, state);
+		}
+
+		pub fn valid_route(&mut self, receiver: Id) -> bool {
+			let state = self.state_tracker.entry(receiver).or_default();
+			self.table
+				.get(&receiver.clone())
+				.map(|rule| rule(state))
+				// Allow all traffic if no rule is defined.
+				.unwrap_or(true)
+		}
+
+		pub fn block(&mut self, receiver: Id) {
+			fn _block(_state: &VoterState) -> bool {
+				false
+			}
+
+			self.add_rule(receiver, _block);
+		}
 	}
 
 	/// the network routing task.
@@ -239,8 +302,7 @@ pub mod environment {
 		/// Key: view/round number, Value: RoundNetwork
 		rounds: Arc<Mutex<HashMap<u64, RoundNetwork>>>,
 		global: Arc<Mutex<GlobalMessageNetwork>>,
-		// Log collector
-		// log_collector: Arc<Mutex<LogNetwork>>,
+		pub(super) rule: Arc<Mutex<RoutingRule>>,
 	}
 
 	impl Future for NetworkRouting {
@@ -284,8 +346,8 @@ pub mod environment {
 		/// Network for the round.
 		rounds: Arc<Mutex<HashMap<u64, RoundNetwork>>>,
 		global: Arc<Mutex<GlobalMessageNetwork>>,
-		// Log collector
-		// log_collector: Arc<Mutex<LogNetwork>>,
+		rule: Arc<Mutex<RoutingRule>>, // Log collector
+		                               // log_collector: Arc<Mutex<LogNetwork>>,
 	}
 
 	impl Network {
@@ -303,9 +365,14 @@ pub mod environment {
 			// 	.lock()
 			// 	.add_node(move |log| report::Log { id: node_id.clone(), state: log });
 			let mut rounds = self.rounds.lock();
-			let round_comm = rounds.entry(view_number).or_insert_with(RoundNetwork::new).add_node(
-				move |message| SignedMessage { message, signature: node_id, id: node_id },
-			);
+			let round_comm = rounds
+				.entry(view_number)
+				.or_insert_with(|| RoundNetwork::new(self.rule.clone()))
+				.add_node(node_id, move |message| SignedMessage {
+					message,
+					signature: node_id,
+					id: node_id,
+				});
 
 			for (key, value) in rounds.iter() {
 				log::trace!("  round_comms: {}, senders.len:{:?}", key, value.senders.len());
@@ -318,6 +385,7 @@ pub mod environment {
 
 		pub fn make_global_comms(
 			&self,
+			id: Id,
 		) -> (
 			impl Stream<Item = Result<GlobalMessageIn<Hash, BlockNumber, Signature, Id>, Error>>,
 			impl Sink<GlobalMessageOut<Hash, BlockNumber, Signature, Id>, Error = Error>,
@@ -333,7 +401,7 @@ pub mod environment {
 					GlobalMessageIn::ViewChange(view_change),
 				GlobalMessageOut::Empty => GlobalMessageIn::Empty,
 			};
-			let global_comm = global.add_node(f);
+			let global_comm = global.add_node(id, f);
 
 			global_comm
 		}
@@ -415,10 +483,10 @@ pub mod environment {
 
 		fn finalize_block(
 			&self,
-			view: u64,
+			_view: u64,
 			hash: Self::Hash,
 			number: Self::Number,
-			f_commit: FinalizedCommit<Self::Number, Self::Hash, Self::Signature, Self::Id>,
+			_f_commit: FinalizedCommit<Self::Number, Self::Hash, Self::Signature, Self::Id>,
 		) -> Result<(), Self::Error> {
 			log::trace!("{:?} finalize_block", self.local_id);
 			self.chain.lock().finalize_block(hash);
@@ -440,5 +508,91 @@ pub mod environment {
 				chain.next_to_be_finalized().unwrap_or_else(|_| chain.last_finalized())
 			}))))
 		}
+	}
+}
+
+#[cfg(test)]
+mod test {
+	use std::time::Duration;
+
+	use futures::{executor::LocalPool, future, task::SpawnExt, SinkExt, StreamExt};
+	use futures_timer::Delay;
+
+	use super::environment::make_network;
+	use crate::leader::voter::{GlobalMessageIn, GlobalMessageOut};
+
+	#[test]
+	#[ntest::timeout(1000)]
+	fn routing_rule_allow_all_in_default() {
+		let (network, routing_network) = make_network();
+		let nodes = 0..2;
+
+		let (nodes, mut nodes_in): (Vec<_>, Vec<_>) = nodes
+			.into_iter()
+			.map(|id| {
+				let (outgo, income) = network.make_global_comms(id);
+
+				let outgo = outgo.take(1).for_each(|msg| {
+					assert_eq!(msg.unwrap(), GlobalMessageIn::Empty);
+					future::ready(())
+				});
+
+				(outgo, income)
+			})
+			.unzip();
+
+		let mut pool = LocalPool::new();
+		pool.spawner().spawn(routing_network).unwrap();
+
+		pool.spawner()
+			.spawn(async move {
+				let node = nodes_in.get_mut(0).unwrap();
+				node.send(GlobalMessageOut::Empty).await.unwrap();
+			})
+			.unwrap();
+
+		pool.run_until(futures::future::join_all(nodes.into_iter()));
+	}
+
+	#[test]
+	fn disable_routing() {
+		let (network, routing_network) = make_network();
+		let nodes = 0..2;
+
+		routing_network.rule.lock().block(0);
+		routing_network.rule.lock().block(1);
+		routing_network.rule.lock().block(2);
+
+		let (nodes, mut nodes_in): (Vec<_>, Vec<_>) = nodes
+			.into_iter()
+			.map(|id| {
+				let (outgo, income) = network.make_global_comms(id);
+
+				let outgo = outgo.take(1).for_each(|msg| {
+					assert!(false, "should not be routed, result: {:?}", msg);
+					future::ready(())
+				});
+
+				let outgo = async move {
+					let timeout = Delay::new(Duration::from_millis(1000));
+
+					futures::future::select(outgo, timeout).await;
+				};
+
+				(outgo, income)
+			})
+			.unzip();
+
+		let mut pool = LocalPool::new();
+		pool.spawner().spawn(routing_network).unwrap();
+
+		pool.spawner()
+			.spawn(async move {
+				let node = nodes_in.get_mut(0).unwrap();
+				node.send(GlobalMessageOut::Empty).await.unwrap();
+			})
+			.unwrap();
+
+		pool.run_until(futures::future::join_all(nodes.into_iter()));
 	}
 }

@@ -168,6 +168,15 @@ pub enum GlobalMessageIn<D, N, S, Id> {
 	Empty,
 }
 
+impl<D, N, S, Id> PartialEq for GlobalMessageIn<D, N, S, Id> {
+	fn eq(&self, other: &Self) -> bool {
+		match (self, other) {
+			(Self::Empty, Self::Empty) => true,
+			_ => false,
+		}
+	}
+}
+
 impl<D, N, S, Id> Unpin for GlobalMessageIn<D, N, S, Id> {}
 
 /// Communication between nodes that is not round-localized.
@@ -513,7 +522,7 @@ where
 					state,
 					total_voters: view_round.voter_set.len().get(),
 					threshold: view_round.voter_set.threshould,
-					preprepare_hash: preprepare.map(|(n, h)| h),
+					preprepare_hash: preprepare.map(|(_n, h)| h),
 					prepare_ids,
 					commit_ids,
 				},
@@ -907,7 +916,7 @@ mod tests {
 		let voter_set = VoterSet::new(vec![5]).unwrap();
 
 		let (network, routing_network) = make_network();
-		let global_comms = network.make_global_comms();
+		let global_comms = network.make_global_comms(local_id);
 
 		let env = Arc::new(DummyEnvironment::new(network, local_id));
 
@@ -973,7 +982,7 @@ mod tests {
 				let mut voter = Voter::new(
 					env.clone(),
 					voter_set.clone(),
-					network.make_global_comms(),
+					network.make_global_comms(local_id),
 					1,
 					last_finalized,
 				);
@@ -1027,7 +1036,7 @@ mod tests {
 				let mut voter = Voter::new(
 					env.clone(),
 					voter_set.clone(),
-					network.make_global_comms(),
+					network.make_global_comms(local_id),
 					// start from view 0
 					0,
 					last_finalized,

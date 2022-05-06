@@ -54,7 +54,7 @@ pub enum Error {
 #[cfg(feature = "std")]
 pub mod voter;
 
-#[cfg(any(test))]
+#[cfg(all(test, feature = "std"))]
 mod testing;
 
 impl std::fmt::Display for Error {
@@ -387,10 +387,9 @@ struct Storage<N, D, S, Id> {
 #[derive(PartialEq, Clone)]
 #[cfg_attr(any(feature = "std", test), derive(Debug))]
 #[cfg_attr(feature = "derive-codec", derive(Encode, Decode, scale_info::TypeInfo))]
-pub struct State<H, N> {
-	/// The finalized block.
-	pub finalized: Option<(H, N)>,
-	/// Whether the round is completable.
+pub struct State<N, H> {
+	/// The last finalized block.
+	pub finalized: Option<(N, H)>,
 	pub completable: bool,
 }
 
@@ -423,6 +422,16 @@ where
 			self.prepare.contains_key(key) ||
 			self.commit.contains_key(key)
 	}
+
+	// Return state of the view.
+	// TODO: maybe used in testing RotingRule.
+	// pub fn state(&self) -> State<H, N> {
+	// 	let mut completable = true;
+	// 	if self.current_state == CurrentState::PrePrepare {
+	// 		completable = false;
+	// 	}
+	// 	State { finalized: self.finalized(), completable }
+	// }
 }
 
 impl<N, H, Id: Eq + Ord + std::hash::Hash, S> Storage<N, H, S, Id>
