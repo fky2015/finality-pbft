@@ -1069,7 +1069,57 @@ mod tests {
 	}
 
 	#[test]
-	fn view_did_not_change_when_primary_alive_without_preprepare() {}
+	fn view_did_not_change_when_primary_alive_without_new_preprepare() {
+		let voters_num = 4;
+		let online_voters_num = 4;
+		let voter_set = VoterSet::new((0..voters_num).into_iter().collect()).unwrap();
+
+		let (network, routing_network) = make_network();
+		let mut pool = LocalPool::new();
+
+		let finalized_streams = (0..online_voters_num)
+			.map(|local_id| {
+				// init chain
+				let env = Arc::new(DummyEnvironment::new(network.clone(), local_id));
+				let last_finalized = env.with_chain(|chain| {
+					chain.push_blocks(GENESIS_HASH, &["A", "B", "C", "D", "E"]);
+					chain.last_finalized()
+				});
+
+				let finalized = env.finalized_stream();
+				let mut voter = Voter::new(
+					env.clone(),
+					voter_set.clone(),
+					network.make_global_comms(local_id),
+					1,
+					last_finalized,
+				);
+
+				pool.spawner()
+					.spawn(async move {
+						voter.run().await;
+					})
+					.unwrap();
+
+				finalized
+					.take_while(|&(_, n)| {
+						log::trace!("n: {}", n);
+						futures::future::ready(n < 6)
+					})
+					.for_each(|v| {
+						log::trace!("v: {:?}", v);
+						futures::future::ready(())
+					})
+			})
+			.collect::<Vec<_>>();
+
+		// run voter in background. scheduling it to shut down at the end.
+		// futures::executor::block_on(testa(voter));
+		pool.spawner().spawn(routing_network).unwrap();
+
+		// wait for the best block to finalized.
+		pool.run_until(futures::future::join_all(finalized_streams.into_iter()));
+	}
 
 	// #[test]
 	// fn exposing_voter_state() {

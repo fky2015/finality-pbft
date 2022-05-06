@@ -114,11 +114,12 @@ pub mod environment {
 	/// Every node can send `Message` to the network, then it will be
 	/// wrapped in `SignedMessage` and broadcast to all other nodes.
 	struct BroadcastNetwork<M> {
-		receiver: UnboundedReceiver<M>,
-		raw_sender: UnboundedSender<M>,
+		receiver: UnboundedReceiver<(Id, M)>,
+		raw_sender: UnboundedSender<(Id, M)>,
 		/// Peer's handle to send messages to.
 		senders: Vec<(Id, UnboundedSender<M>)>,
 		history: Vec<M>,
+		validator_hook: Option<Arc<Mutex<dyn Fn(&M) -> bool + Send + Sync>>>,
 		rule: Arc<Mutex<RoutingRule>>,
 	}
 
@@ -130,8 +131,13 @@ pub mod environment {
 				raw_sender: tx,
 				senders: Vec::new(),
 				history: Vec::new(),
+				validator_hook: None,
 				rule,
 			}
+		}
+
+		fn register_validator_hook(&mut self, hook: Arc<Mutex<dyn Fn(&M) -> bool + Send + Sync>>) {
+			self.validator_hook = Some(hook);
 		}
 
 		/// Add a node to the network for a round.
@@ -147,7 +153,7 @@ pub mod environment {
 				.raw_sender
 				.clone()
 				.sink_map_err(|e| panic!("Error sending message: {:?}", e))
-				.with(move |message| std::future::ready(Ok(f(message))));
+				.with(move |message| std::future::ready(Ok((id, f(message)))));
 
 			// get history to the node.
 			// for prior_message in self.history.iter().cloned() {
@@ -167,13 +173,13 @@ pub mod environment {
 				// Receive item from receiver
 				match Pin::new(&mut self.receiver).poll_next(cx) {
 					// While have message
-					Poll::Ready(Some(msg)) => {
+					Poll::Ready(Some((ref from, msg))) => {
 						self.history.push(msg.clone());
 
 						log::trace!("    msg {:?}", msg);
 						// Broadcast to all peers including itself.
-						for (id, sender) in &self.senders {
-							if self.rule.lock().valid_route(*id) {
+						for (to, sender) in &self.senders {
+							if self.rule.lock().valid_route(from, to) {
 								let _res = sender.unbounded_send(msg.clone());
 							}
 							// log::trace!("route: tx.isclosed? {}", sender.is_closed());
@@ -254,46 +260,60 @@ pub mod environment {
 		}
 	}
 
-	type Rule = fn(&VoterState) -> bool;
+	// type Rule = fn(Id, &VoterState, Id, &VoterState) -> bool;
+	type Rule = Box<dyn Fn(&Id, &VoterState, &Id, &VoterState) -> bool + Send>;
 
 	#[derive(Default)]
 	pub(super) struct RoutingRule {
 		nodes: Vec<Id>,
 		state_tracker: HashMap<Id, VoterState>,
 		// TODO: DOC
-		/// key: receiver
-		/// value: Rule
-		table: HashMap<Id, Rule>,
+		rules: Vec<Rule>,
 	}
 
 	impl RoutingRule {
 		pub fn new() -> Self {
-			Self { table: HashMap::new(), nodes: Vec::new(), state_tracker: HashMap::new() }
+			Self { nodes: Vec::new(), state_tracker: HashMap::new(), rules: Vec::new() }
 		}
 
-		pub fn add_rule(&mut self, receiver: Id, rule: Rule) {
-			self.table.insert(receiver.clone(), rule);
+		pub fn add_rule(&mut self, rule: Rule) {
+			self.rules.push(rule);
 		}
 
 		pub fn update_state(&mut self, id: Id, state: VoterState) {
 			self.state_tracker.insert(id, state);
 		}
 
-		pub fn valid_route(&mut self, receiver: Id) -> bool {
-			let state = self.state_tracker.entry(receiver).or_default();
-			self.table
-				.get(&receiver.clone())
-				.map(|rule| rule(state))
-				// Allow all traffic if no rule is defined.
-				.unwrap_or(true)
+		pub fn valid_route(&mut self, from: &Id, to: &Id) -> bool {
+			match (self.state_tracker.get(from), self.state_tracker.get(to)) {
+				(Some(_), None) => {
+					self.state_tracker.insert(to.clone(), VoterState::new());
+				},
+				(None, Some(_)) => {
+					self.state_tracker.insert(from.clone(), VoterState::new());
+				},
+				(None, None) => {
+					self.state_tracker.insert(from.clone(), VoterState::new());
+					self.state_tracker.insert(to.clone(), VoterState::new());
+				},
+				_ => {},
+			};
+
+			let from_state = self.state_tracker.get(from).unwrap();
+			let to_state = self.state_tracker.get(to).unwrap();
+			self.rules.iter().map(|rule| rule(from, from_state, to, to_state)).all(|v| v)
 		}
 
-		pub fn block(&mut self, receiver: Id) {
-			fn _block(_state: &VoterState) -> bool {
-				false
-			}
-
-			self.add_rule(receiver, _block);
+		pub fn isolate(&mut self, node: Id) {
+			let _isolate =
+				move |from: &Id, _from_state: &VoterState, to: &Id, _to_state: &VoterState| {
+					!(from == &node || to == &node)
+				};
+			// fn _isolate(from: Id, from_state: &VoterState, to: Id, to_state: &VoterState) -> bool {
+			// 	!(from == node || to == node)
+			// }
+			//
+			self.add_rule(Box::new(_isolate));
 		}
 	}
 
@@ -559,9 +579,9 @@ mod test {
 		let (network, routing_network) = make_network();
 		let nodes = 0..2;
 
-		routing_network.rule.lock().block(0);
-		routing_network.rule.lock().block(1);
-		routing_network.rule.lock().block(2);
+		routing_network.rule.lock().isolate(0);
+		routing_network.rule.lock().isolate(1);
+		routing_network.rule.lock().isolate(2);
 
 		let (nodes, mut nodes_in): (Vec<_>, Vec<_>) = nodes
 			.into_iter()
