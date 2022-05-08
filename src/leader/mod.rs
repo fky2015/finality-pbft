@@ -499,7 +499,7 @@ impl<Id: Eq + Ord + Clone> VoterSet<Id> {
 		if voters.is_empty() {
 			None
 		} else {
-			let len = voters.len() / 3 * 2 + 1;
+			let len = voters.len() - (voters.len() - 1) / 3;
 			Some(Self { voters, threshould: len })
 		}
 	}
@@ -606,5 +606,19 @@ impl<H, N> Default for CommitValidationResult<H, N> {
 			num_duplicated_commits: 0,
 			num_invalid_voters: 0,
 		}
+	}
+}
+
+#[cfg(test)]
+mod test {
+	use super::*;
+
+	#[test]
+	fn test_threshould() {
+		assert_eq!(VoterSet::new((0..1).into_iter().collect()).unwrap().threshould, 1);
+		assert_eq!(VoterSet::new((0..2).into_iter().collect()).unwrap().threshould, 2);
+		assert_eq!(VoterSet::new((0..3).into_iter().collect()).unwrap().threshould, 3);
+		assert_eq!(VoterSet::new((0..4).into_iter().collect()).unwrap().threshould, 3);
+		assert_eq!(VoterSet::new((0..5).into_iter().collect()).unwrap().threshould, 4);
 	}
 }

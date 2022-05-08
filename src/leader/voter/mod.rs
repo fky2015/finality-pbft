@@ -196,13 +196,6 @@ pub enum GlobalMessageOut<D, N, S, Id> {
 	Empty,
 }
 
-pub(crate) mod helper {
-	// TODO: eliminate this
-	pub fn supermajority(n: usize, valid_number: usize) -> bool {
-		n > 3 * (n - valid_number)
-	}
-}
-
 type FinalizedNotification<E> = (
 	<E as Environment>::Hash,
 	<E as Environment>::Number,
@@ -889,7 +882,7 @@ where
 
 	fn validate_prepare(&mut self) -> bool {
 		let c = self.message_log.lock().count_prepares();
-		if helper::supermajority(self.voter_set.len().get(), c) {
+		if c >= self.voter_set.threshould() {
 			self.change_state(CurrentState::Commit)
 		}
 		true
@@ -899,7 +892,7 @@ where
 		&mut self,
 	) -> Option<FinalizedCommit<E::Number, E::Hash, E::Signature, E::Id>> {
 		let c = self.message_log.lock().count_commits();
-		if helper::supermajority(self.voter_set.len().get(), c) {
+		if c >= self.voter_set.threshould() {
 			self.change_state(CurrentState::PrePrepare);
 
 			let (target_height, target_hash) = self.message_log.lock().target.clone().unwrap();
@@ -971,7 +964,7 @@ where
 
 		if let Some(f_commit) = self.validate_commit() {
 			// Skip if we already have a same finalized commit.
-            // TODO: maybe further check the commit is the same?
+			// TODO: maybe further check the commit is the same?
 			if self.message_log.lock().last_round_base.0 == height {
 				log::trace!(target: "afp", "{:?} in view {} valid commit", self.id, self.view);
 				let _ = self.env.finalize_block(self.view, hash, height, f_commit);
@@ -1364,8 +1357,8 @@ mod tests {
 				view_number: 3,
 				base_number: 1,
 				base_hash: GENESIS_HASH,
-				prepares: vec![pp(0), pp(1), pp(2)],
-				commits: vec![cm(0), cm(1), cm(2)],
+				prepares: vec![pp(0), pp(1), pp(2), pp(3)],
+				commits: vec![cm(0), cm(1), cm(2), cm(3)],
 			},
 			Callback::Blank,
 		));
@@ -1402,7 +1395,7 @@ mod tests {
 				crate::leader::voter::report::ViewState::<Hash, Id> {
 					state: crate::leader::CurrentState::PrePrepare,
 					total_voters: 5,
-					threshold: 3,
+					threshold: 4,
 					preprepare_hash: Some("D"),
 					prepare_ids: Default::default(),
 					commit_ids: Default::default(),
