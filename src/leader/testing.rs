@@ -1,7 +1,7 @@
-type Id = u64;
-type Signature = u64;
-type Hash = &'static str;
-type BlockNumber = u64;
+pub(crate) type Id = u64;
+pub(crate) type Signature = u64;
+pub(crate) type Hash = &'static str;
+pub(crate) type BlockNumber = u64;
 
 pub mod chain {
 	use super::*;
@@ -67,13 +67,13 @@ pub mod chain {
 			if let Some(b) = self.inner.get(&block) {
 				#[cfg(feature = "std")]
 				log::trace!("finalize block: {:?}", b);
-				if self.inner.get(&b.parent).map(|p| p.number + 1 == b.number).unwrap_or(false) {
+				if self.inner.get(&b.parent).map(|p| p.number < b.number).unwrap_or(false) {
 					self.finalized = (b.number, block);
 					#[cfg(feature = "std")]
-					log::trace!("new finalized = {:?}", self.finalized);
+					log::info!("new finalized = {:?}", self.finalized);
 					return true
 				} else {
-					return false
+					panic!("block {} is not a descendent of {}", b.number, b.parent);
 				}
 			}
 
@@ -92,13 +92,16 @@ pub mod environment {
 		time::Duration,
 	};
 
-	use crate::leader::{
-		testing::chain::DummyChain,
-		voter::{
-			communicate::{RoundData, VoterData},
-			Callback, Environment, GlobalMessageIn, GlobalMessageOut,
+	use crate::{
+		leader::{
+			testing::chain::DummyChain,
+			voter::{
+				communicate::{RoundData, VoterData},
+				Callback, Environment, GlobalMessageIn, GlobalMessageOut,
+			},
+			Error, FinalizedCommit, Message, SignedMessage,
 		},
-		Error, FinalizedCommit, Message, SignedMessage,
+		voter::CommunicationIn,
 	};
 
 	use super::*;
@@ -119,7 +122,8 @@ pub mod environment {
 		/// Peer's handle to send messages to.
 		senders: Vec<(Id, UnboundedSender<M>)>,
 		history: Vec<M>,
-		validator_hook: Option<Arc<Mutex<dyn Fn(&M) -> bool + Send + Sync>>>,
+		// TODO: IMPLEMENT THIS.
+		validator_hook: Option<Box<dyn Fn(&M) -> () + Send + Sync>>,
 		rule: Arc<Mutex<RoutingRule>>,
 	}
 
@@ -136,7 +140,7 @@ pub mod environment {
 			}
 		}
 
-		fn register_validator_hook(&mut self, hook: Arc<Mutex<dyn Fn(&M) -> bool + Send + Sync>>) {
+		fn register_validator_hook(&mut self, hook: Box<dyn Fn(&M) -> () + Send + Sync>) {
 			self.validator_hook = Some(hook);
 		}
 
@@ -176,6 +180,11 @@ pub mod environment {
 					Poll::Ready(Some((ref from, msg))) => {
 						self.history.push(msg.clone());
 
+						// Validate message.
+						if let Some(hook) = &self.validator_hook {
+							hook(&msg);
+						}
+
 						log::trace!("    msg {:?}", msg);
 						// Broadcast to all peers including itself.
 						for (to, sender) in &self.senders {
@@ -190,6 +199,11 @@ pub mod environment {
 					Poll::Ready(None) => return Poll::Ready(()),
 				}
 			}
+		}
+
+		pub fn send_message(&self, message: M) {
+			// TODO: id: `0` is not used.
+			let _ = self.raw_sender.unbounded_send((0, message));
 		}
 	}
 
@@ -249,9 +263,9 @@ pub mod environment {
 	}
 
 	#[derive(Default, Copy, Clone)]
-	pub struct VoterState {
-		last_finalized: BlockNumber,
-		view_number: u64,
+	pub(crate) struct VoterState {
+		pub(crate) last_finalized: BlockNumber,
+		pub(crate) view_number: u64,
 	}
 
 	impl VoterState {
@@ -261,11 +275,12 @@ pub mod environment {
 	}
 
 	// type Rule = fn(Id, &VoterState, Id, &VoterState) -> bool;
-	type Rule = Box<dyn Fn(&Id, &VoterState, &Id, &VoterState) -> bool + Send>;
+	type Rule = Box<dyn Send + Fn(&Id, &VoterState, &Id, &VoterState) -> bool>;
 
 	#[derive(Default)]
-	pub(super) struct RoutingRule {
+	pub(crate) struct RoutingRule {
 		nodes: Vec<Id>,
+		// TODO: find a way to update state.
 		state_tracker: HashMap<Id, VoterState>,
 		// TODO: DOC
 		rules: Vec<Rule>,
@@ -309,11 +324,16 @@ pub mod environment {
 				move |from: &Id, _from_state: &VoterState, to: &Id, _to_state: &VoterState| {
 					!(from == &node || to == &node)
 				};
-			// fn _isolate(from: Id, from_state: &VoterState, to: Id, to_state: &VoterState) -> bool {
-			// 	!(from == node || to == node)
-			// }
-			//
 			self.add_rule(Box::new(_isolate));
+		}
+
+		pub fn isolate_after(&mut self, node: Id, after: BlockNumber) {
+			let _isolate_after =
+				move |from: &Id, from_state: &VoterState, to: &Id, to_state: &VoterState| {
+					!((from == &node && from_state.last_finalized >= after) ||
+						(to == &node && to_state.last_finalized >= after))
+				};
+			self.add_rule(Box::new(_isolate_after));
 		}
 	}
 
@@ -322,7 +342,18 @@ pub mod environment {
 		/// Key: view/round number, Value: RoundNetwork
 		rounds: Arc<Mutex<HashMap<u64, RoundNetwork>>>,
 		global: Arc<Mutex<GlobalMessageNetwork>>,
-		pub(super) rule: Arc<Mutex<RoutingRule>>,
+		pub(crate) rule: Arc<Mutex<RoutingRule>>,
+	}
+
+	impl NetworkRouting {
+		pub fn register_global_validator_hook(
+			&mut self,
+			hook: Box<
+				dyn Fn(&GlobalMessageIn<Hash, BlockNumber, Signature, Id>) -> () + Sync + Send,
+			>,
+		) {
+			self.global.lock().register_validator_hook(hook);
+		}
 	}
 
 	impl Future for NetworkRouting {
@@ -425,6 +456,11 @@ pub mod environment {
 
 			global_comm
 		}
+
+		/// Send a message to all nodes.
+		pub fn send_message(&self, message: GlobalMessageIn<Hash, BlockNumber, Signature, Id>) {
+			self.global.lock().send_message(message);
+		}
 	}
 
 	pub struct DummyEnvironment {
@@ -503,28 +539,26 @@ pub mod environment {
 
 		fn finalize_block(
 			&self,
-			_view: u64,
+			view: u64,
 			hash: Self::Hash,
 			number: Self::Number,
 			_f_commit: FinalizedCommit<Self::Number, Self::Hash, Self::Signature, Self::Id>,
 		) -> Result<(), Self::Error> {
 			log::trace!("{:?} finalize_block", self.local_id);
 			self.chain.lock().finalize_block(hash);
-			for i in self.listeners.lock().iter() {
-				i.unbounded_send((hash, number)).unwrap();
-			}
+			self.listeners.lock().retain(|s| s.unbounded_send((hash, number)).is_ok());
+
+			// Update Network RoutingRule's state.
+			self.network.rule.lock().update_state(
+				self.local_id,
+				VoterState { view_number: view, last_finalized: number },
+			);
 
 			Ok(())
 		}
 
 		fn preprepare(&self, _view: u64, _block: Self::Hash) -> Self::BestChain {
 			Box::new(futures::future::ok(Some(self.with_chain(|chain| {
-				log::info!(
-					"chain: {:?}, last_finalized: {:?}, next_to_be_finalized: {:?}",
-					chain,
-					chain.last_finalized(),
-					chain.next_to_be_finalized()
-				);
 				chain.next_to_be_finalized().unwrap_or_else(|_| chain.last_finalized())
 			}))))
 		}
@@ -533,13 +567,58 @@ pub mod environment {
 
 #[cfg(test)]
 mod test {
-	use std::time::Duration;
+	use std::{sync::Arc, time::Duration};
 
 	use futures::{executor::LocalPool, future, task::SpawnExt, SinkExt, StreamExt};
 	use futures_timer::Delay;
+	use parking_lot::Mutex;
 
 	use super::environment::make_network;
 	use crate::leader::voter::{GlobalMessageIn, GlobalMessageOut};
+
+	#[test]
+	fn test_validator_hook() {
+		let (network, mut routing_network) = make_network();
+		let nodes = 0..2;
+
+		let count = Arc::new(Mutex::new(0));
+
+		let count_clone = count.clone();
+
+		routing_network.register_global_validator_hook(Box::new(move |m| {
+			let mut count = count.lock();
+			*count += 1;
+			assert_eq!(m, &GlobalMessageIn::Empty);
+		}));
+		assert_eq!(*count_clone.lock(), 0);
+
+		let (nodes, mut nodes_in): (Vec<_>, Vec<_>) = nodes
+			.into_iter()
+			.map(|id| {
+				let (outgo, income) = network.make_global_comms(id);
+
+				let outgo = outgo.take(1).for_each(|msg| {
+					assert_eq!(msg.unwrap(), GlobalMessageIn::Empty);
+					future::ready(())
+				});
+
+				(outgo, income)
+			})
+			.unzip();
+
+		let mut pool = LocalPool::new();
+		pool.spawner().spawn(routing_network).unwrap();
+
+		pool.spawner()
+			.spawn(async move {
+				let node = nodes_in.get_mut(0).unwrap();
+				node.send(GlobalMessageOut::Empty).await.unwrap();
+			})
+			.unwrap();
+
+		pool.run_until(futures::future::join_all(nodes.into_iter()));
+		assert_eq!(*count_clone.lock(), 1);
+	}
 
 	#[test]
 	#[ntest::timeout(1000)]

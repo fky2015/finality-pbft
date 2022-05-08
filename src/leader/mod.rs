@@ -48,6 +48,7 @@ pub enum Error {
 	// NoPrePrepare,
 	/// No Primary message was received.
 	PrimaryFailure,
+	CommitNotEnough,
 	IncomingClosed,
 }
 
@@ -60,14 +61,14 @@ mod testing;
 impl std::fmt::Display for Error {
 	fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
 		match *self {
-			// Error::NoPrePrepare => {
-			// 	write!(f, "No preprepare message, may need to initiate view change.")
-			// },
 			Error::PrimaryFailure => {
 				write!(f, "No primary message, may need to initiate view change.")
 			},
 			Error::IncomingClosed => {
 				write!(f, "Incoming channel is closed (unexpected).")
+			},
+			Error::CommitNotEnough => {
+				write!(f, "Commit not enough.")
 			},
 		}
 	}
@@ -222,7 +223,7 @@ impl<D, N: Copy> Message<N, D> {
 
 /// A commit message which is an aggregate of commits.
 /// NOTE: Similar to `Commit` in GRANDPA.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(PartialEq, Eq, Clone)]
 #[cfg_attr(any(feature = "std", test), derive(Debug))]
 #[cfg_attr(feature = "derive-codec", derive(Encode, Decode, TypeInfo))]
 pub struct FinalizedCommit<N, D, S, Id> {
@@ -342,6 +343,7 @@ pub enum CurrentState {
 	PrePrepare,
 	Prepare,
 	Commit,
+	// Current View should gracefully shutdown since higher view presents.
 	// ChangeView,
 	// ViewChangeAck,
 	// NewView,
@@ -373,7 +375,7 @@ where
 
 /// similar to: [`round::Round`]
 #[cfg_attr(any(feature = "std", test), derive(Debug))]
-struct Storage<N, D, S, Id> {
+pub(crate) struct Storage<N, D, S, Id> {
 	last_round_base: (N, D),
 	current_state: CurrentState,
 	// from valid preprepare msg.
@@ -497,7 +499,7 @@ impl<Id: Eq + Ord + Clone> VoterSet<Id> {
 		if voters.is_empty() {
 			None
 		} else {
-			let len = voters.len() / 3 + 1;
+			let len = voters.len() / 3 * 2 + 1;
 			Some(Self { voters, threshould: len })
 		}
 	}

@@ -215,17 +215,85 @@ type FinalizedNotification<E> = (
 	>,
 );
 
+/// Storage ViewChange message.
+#[derive(Debug)]
+pub(crate) struct PeerViewChange<Id, N, H, S> {
+	// <ID, BEST_VIEW_CHANGE>
+	inner: HashMap<Id, u64>,
+	best_finzalized: Option<FinalizedCommit<N, H, S, Id>>,
+}
+
+impl<Id: Eq + std::hash::Hash, N: Clone, H: Clone, S: Clone> PeerViewChange<Id, N, H, S> {
+	pub fn new() -> Self {
+		PeerViewChange { inner: HashMap::new(), best_finzalized: None }
+	}
+
+	pub fn insert(&mut self, id: Id, view: u64) {
+		if let Some(old_view) = self.inner.get(&id).clone() {
+			if *old_view > view {
+				return
+			} else {
+				self.inner.insert(id, view);
+			}
+		} else {
+			self.inner.insert(id, view);
+		}
+	}
+
+	pub fn count_view_change(&self, target_view: u64) -> usize {
+		self.inner.iter().filter(|(_, &v)| v == target_view).count()
+	}
+
+	pub fn prune(&mut self) {
+		self.inner.clear();
+	}
+
+	pub fn exist(&self, id: &Id, view: u64) -> bool {
+		self.inner.get(id).map(|&v| v == view).unwrap_or(false)
+	}
+
+	pub fn exist_higher(&self, id: &Id, view: u64) -> bool {
+		self.inner.get(id).map(|&v| v <= view).unwrap_or(false)
+	}
+
+	/// TODO: docs
+	/// Return hightest valid view number.
+	pub fn exist_valid_view(
+		&mut self,
+		lowest_view: u64,
+		threshould: usize,
+	) -> Option<(u64, Option<FinalizedCommit<N, H, S, Id>>)> {
+		let mut count = HashMap::new();
+		self.inner.iter().filter(|(_, &v)| v >= lowest_view).for_each(|(_, &v)| {
+			count.entry(v).and_modify(|c| *c += 1).or_insert(1);
+		});
+
+		count
+			.iter()
+			.filter(|(_, &c)| c >= threshould)
+			.map(|(v, _)| *v)
+			.next()
+			.map(|v| (v, self.best_finzalized.take()))
+	}
+
+	/// For catch-up message.
+	pub fn insert_best_common_finalized(&mut self, best_finalized: FinalizedCommit<N, H, S, Id>) {
+		self.best_finzalized = Some(best_finalized);
+	}
+}
+
 pub struct Voter<E: Environment, GlobalIn, GlobalOut> {
 	local_id: E::Id,
 	env: Arc<E>,
 	voters: VoterSet<E::Id>,
 	inner: Arc<Mutex<InnerVoterState<E>>>,
 	// finalized_notifications: UnboundedReceiver<FinalizedNotification<E>>,
-	global_incoming: GlobalIn,
+	global_incoming: Option<GlobalIn>,
 	global_outgoing: GlobalOut,
-	// TODO: consider wrap this around sth.
 	last_finalized_target: (E::Number, E::Hash),
 	current_view_number: u64,
+	// <ID, BEST_VIEW_CHANGE>
+	peer_view: Arc<Mutex<PeerViewChange<E::Id, E::Number, E::Hash, E::Signature>>>,
 }
 
 // QUESTION: why 'a
@@ -280,11 +348,12 @@ where
 			local_id: voter_data.local_id,
 			env: env.clone(),
 			voters,
-			global_incoming: global_comms.0,
+			global_incoming: Some(global_comms.0),
 			global_outgoing: global_comms.1,
 			last_finalized_target: last_round_base,
 			inner: Arc::new(Mutex::new(InnerVoterState { best_view })),
 			current_view_number,
+			peer_view: Arc::new(Mutex::new(PeerViewChange::new())),
 		}
 	}
 
@@ -323,54 +392,41 @@ where
 		}
 	}
 
-	pub async fn change_view(
-		current_view: u64,
-		id: E::Id,
-		global_outgoing: &mut GlobalOut,
-		global_incoming: &mut GlobalIn,
-		voters: &VoterSet<E::Id>,
-	) -> Result<u64, E::Error> {
+	pub async fn change_view(&mut self) -> Result<u64, E::Error> {
 		const DELAY_VIEW_CHANGE_WAIT: u64 = 1000;
-		let mut new_view = current_view + 1;
+		let new_view = self.current_view_number + 1;
 		loop {
-			log::info!(target: "afp", "id: {:?}, start view_change: {new_view}", id);
+			log::info!(target: "afp", "id: {:?}, start view_change: {new_view}", self.local_id);
 
 			// create new view change message
-			let view_change = ViewChange::new(new_view, id.clone());
-			let mut log = HashMap::<E::Id, ViewChange<E::Id>>::new();
+			let view_change = ViewChange::new(new_view, self.local_id.clone());
 
-			global_outgoing.send(GlobalMessageOut::ViewChange(view_change.clone())).await?;
+			self.global_outgoing
+				.send(GlobalMessageOut::ViewChange(view_change.clone()))
+				.await?;
 
-			let mut timeout = Delay::new(Duration::from_millis(DELAY_VIEW_CHANGE_WAIT)).fuse();
+			// wait for timeout.
+			Delay::new(Duration::from_millis(DELAY_VIEW_CHANGE_WAIT)).await;
 
-			loop {
-				// Stream.next with timeout
-				futures::select! {
-					_ = timeout => {
-						break;
-					},
-					msg = global_incoming.try_next().fuse() => {
-						let msg = msg?.unwrap();
-						if let GlobalMessageIn::ViewChange (msg) = msg {
-							if new_view == msg.new_view {
-								log::trace!(target: "afp", "{:?} save valid viewChange {:?}", id, msg);
-								log.insert(msg.id.clone(), msg);
-							}
-						}
-					}
-				}
-			}
+			let result = self.peer_view.lock().exist_valid_view(new_view, self.voters.threshould());
+			// TODO: also, try to process catch-up message.
+			if let Some(new_view_info) = result {
+				if let Some(f_commit) = new_view_info.1.clone() {
+					log::info!(target: "afp", "id: {:?}, collect new catch up from peers: {:?}", self.local_id, f_commit);
+					self.last_finalized_target =
+						(f_commit.target_number.clone(), f_commit.target_hash.clone());
 
-			if log.len() >= voters.threshould() {
-				log::info!(target: "afp", "id: {:?}, successfully view_change: {new_view}", id);
-				return Ok(new_view)
-			} else {
-				// if primary in new view also send view change message, keep view number unchanged
-				let primary = voters.get_primary(new_view);
-				if log.contains_key(&primary) {
-				} else {
-					new_view += 1;
-				}
+					let _ = self.env.finalize_block(
+						new_view_info.0,
+						self.last_finalized_target.1.clone(),
+						self.last_finalized_target.0.clone(),
+						f_commit,
+					);
+				};
+				// TODO: maybe not prune those who higher than new_view.
+				self.peer_view.lock().prune();
+				log::info!(target: "afp", "id: {:?}, successfully view_change: {:?}", self.local_id, new_view_info);
+				return Ok(new_view_info.0)
 			}
 		}
 	}
@@ -378,6 +434,22 @@ where
 	pub async fn run(&mut self) {
 		log::trace!(target: "afp", "{:?} Voter::run", self.local_id);
 
+		let global_incoming = Self::process_global_incoming(
+			self.global_incoming.take().unwrap(),
+			self.peer_view.clone(),
+			self.local_id.clone(),
+		)
+		.fuse();
+		let run_voter = self.run_voter().fuse();
+
+		futures::pin_mut!(run_voter, global_incoming);
+		// This should never return.
+		futures::future::select(run_voter, global_incoming).await;
+
+		log::warn!(target: "afp", "voter stopped.");
+	}
+
+	pub(crate) async fn run_voter(&mut self) {
 		loop {
 			let mut best_view = self.inner.lock().best_view.take_clone();
 
@@ -399,15 +471,7 @@ where
 			if let Err(e) = result {
 				log::warn!(target: "afp", "Error throw by ViewRound: {:?}", e);
 				// TODO: may need to change view
-				let new_view = Voter::<E, GlobalIn, GlobalOut>::change_view(
-					self.current_view_number,
-					self.local_id.clone(),
-					&mut self.global_outgoing,
-					&mut self.global_incoming,
-					&self.voters,
-				)
-				.await
-				.unwrap();
+				let new_view = self.change_view().await.unwrap();
 				self.current_view_number = new_view;
 			} else {
 				self.last_finalized_target = result.unwrap();
@@ -415,6 +479,50 @@ where
 
 			// Initiate a new view round.
 			self.inner.lock().best_view = self.new_view_round();
+		}
+	}
+
+	pub(crate) async fn process_global_incoming(
+		mut global_incoming: GlobalIn,
+		peer_view_change: Arc<Mutex<PeerViewChange<E::Id, E::Number, E::Hash, E::Signature>>>,
+		local_id: E::Id,
+	) {
+		loop {
+			match global_incoming.try_next().await.unwrap().unwrap() {
+				GlobalMessageIn::Commit(_, _, _) => todo!(),
+				GlobalMessageIn::CatchUp(
+					CatchUp { view_number, prepares, commits, base_hash, base_number },
+					_cb,
+				) => {
+					// catch up will only be accepted when voter is during a view changing (not
+					// voting).
+					// This could be checked by finding self view change message.
+					// if peer_view_change.lock().exist(&local_id, view_number) {
+					// 1. TODO: validate
+
+					// 2. update current view change
+					let target = commits
+						.iter()
+						.next()
+						.map(|c| (c.commit.target_number, c.commit.target_hash.clone()))
+						.unwrap();
+					commits.iter().for_each(|SignedCommit { id, .. }| {
+						peer_view_change.lock().insert(id.clone(), view_number);
+					});
+
+					log::trace!(target: "afp", "{:?} catch up message: {:?}", local_id, (view_number, target.clone()));
+
+					let f_commit =
+						FinalizedCommit { target_number: target.0, target_hash: target.1, commits };
+					peer_view_change.lock().insert_best_common_finalized(f_commit);
+				},
+				GlobalMessageIn::ViewChange(ViewChange { new_view, id }) => {
+					// TODO: check before insert
+					peer_view_change.lock().insert(id, new_view);
+					log::trace!(target: "afp", "{:?} view change message: {:?}", local_id, new_view);
+				},
+				GlobalMessageIn::Empty => {},
+			}
 		}
 	}
 
@@ -732,8 +840,10 @@ where
 		let preprepare = PrePrepare::new(self.view, height, hash);
 		self.multicast(Message::PrePrepare(preprepare)).await?;
 
+		log::trace!(target: "afp", "{:?} sleep {} ms.", self.id, DELAY_PRE_PREPARE_MILLI);
 		Delay::new(Duration::from_millis(DELAY_PRE_PREPARE_MILLI)).await;
 
+		log::trace!(target: "afp", "{:?} finish preprepare.", self.id);
 		Ok(())
 	}
 
@@ -816,7 +926,11 @@ where
 
 	async fn multicast(&mut self, msg: Message<E::Number, E::Hash>) -> Result<(), E::Error> {
 		log::trace!(target: "afp", "{:?} multicast message: {:?}", self.id, msg);
-		self.outgoing.as_mut().unwrap().send(msg).await
+		let result = self.outgoing.as_mut().unwrap().send(msg).await;
+
+		log::trace!(target: "afp", "{:?} multicast message finish with result: {:?}", self.id, result);
+
+		result
 	}
 
 	fn primary_alive(&self) -> Result<(), E::Error> {
@@ -859,6 +973,8 @@ where
 		if let Some(f_commit) = self.validate_commit() {
 			log::trace!(target: "afp", "{:?} in view {} valid commit", self.id, self.view);
 			let _ = self.env.finalize_block(self.view, hash, height, f_commit);
+		} else {
+			return Err(Error::CommitNotEnough.into())
 		}
 
 		log::trace!(target: "afp", "{:?} ViewRound::END {:?}", self.id, self.view);
@@ -876,42 +992,41 @@ where
 
 #[cfg(test)]
 mod tests {
+	use pretty_assertions::assert_eq;
 	// - decode/encode test
 	// state change test
-	#[test]
-	fn state_should_change_for_enough_prepare_msg() {
-		// let (network, _) = make_network();
-		// let voter_set = vec![0, 1, 2, 3];
-		// let v1 = ViewRound::new(0, 1, voter_set, Arc::new(DummyEnvironment::new(network, 0)));
-		//
-		// assert_eq!(v1.current_state, CurrentState::PrePrepare);
+	// #[test]
+	// fn state_should_change_for_enough_prepare_msg() {
+	// let (network, _) = make_network();
+	// let voter_set = vec![0, 1, 2, 3];
+	// let v1 = ViewRound::new(0, 1, voter_set, Arc::new(DummyEnvironment::new(network, 0)));
+	//
+	// assert_eq!(v1.current_state, CurrentState::PrePrepare);
 
-		// v1.prepare();
-		//
-		// assert_eq!(v1.current_state, CurrentState::Prepare);
+	// v1.prepare();
+	//
+	// assert_eq!(v1.current_state, CurrentState::Prepare);
 
-		// v1.handle_message(SignedMessage {
-		// 	from: 1,
-		// 	message: Message::Prepare { view: 0, digest: "block 1", seq_number: 1 },
-		// 	signature: 123,
-		// });
-		//
-		// assert_eq!(v1.current_state, CurrentState::Prepare);
-		//
-		// v1.handle_message(SignedMessage {
-		// 	from: 2,
-		// 	message: Message::Prepare { view: 0, digest: "block 1", seq_number: 1 },
-		// 	signature: 123,
-		// });
-		//
-		// assert_eq!(v1.current_state, CurrentState::Commit);
-	}
-
-	// communication test
+	// v1.handle_message(SignedMessage {
+	// 	from: 1,
+	// 	message: Message::Prepare { view: 0, digest: "block 1", seq_number: 1 },
+	// 	signature: 123,
+	// });
+	//
+	// assert_eq!(v1.current_state, CurrentState::Prepare);
+	//
+	// v1.handle_message(SignedMessage {
+	// 	from: 2,
+	// 	message: Message::Prepare { view: 0, digest: "block 1", seq_number: 1 },
+	// 	signature: 123,
+	// });
+	//
+	// assert_eq!(v1.current_state, CurrentState::Commit);
+	// }
+	//
+	// // communication test
 	#[test]
 	fn talking_to_myself() {
-		let _ = simple_logger::init_with_level(log::Level::Trace);
-
 		let local_id = 5;
 		let voter_set = VoterSet::new(vec![5]).unwrap();
 
@@ -923,7 +1038,7 @@ mod tests {
 		// init chain
 		let last_finalized = env.with_chain(|chain| {
 			chain.push_blocks(GENESIS_HASH, &["A", "B", "C", "D", "E"]);
-			log::info!(
+			log::trace!(
 				"chain: {:?}, last_finalized: {:?}, next_to_be_finalized: {:?}",
 				chain,
 				chain.last_finalized(),
@@ -1074,7 +1189,279 @@ mod tests {
 		let online_voters_num = 4;
 		let voter_set = VoterSet::new((0..voters_num).into_iter().collect()).unwrap();
 
+		let (network, mut routing_network) = make_network();
+		routing_network.register_global_validator_hook(Box::new(|m| match m {
+			super::GlobalMessageIn::CatchUp(_, _) | super::GlobalMessageIn::ViewChange(_) => {
+				panic!("should not receive view change or catchup message.");
+			},
+			_ => {},
+		}));
+		let mut pool = LocalPool::new();
+
+		let finalized_streams = (0..online_voters_num)
+			.map(|local_id| {
+				// init chain
+				let env = Arc::new(DummyEnvironment::new(network.clone(), local_id));
+				let last_finalized = env.with_chain(|chain| {
+					chain.push_blocks(GENESIS_HASH, &["A", "B"]);
+					chain.last_finalized()
+				});
+
+				let finalized = env.finalized_stream();
+				let mut voter = Voter::new(
+					env.clone(),
+					voter_set.clone(),
+					network.make_global_comms(local_id),
+					1,
+					last_finalized,
+				);
+
+				pool.spawner()
+					.spawn(async move {
+						voter.run().await;
+					})
+					.unwrap();
+
+				finalized.take(6).for_each(|(_h, n)| {
+					assert!(n < 4, "block_number should less than 4.");
+					futures::future::ready(())
+				})
+			})
+			.collect::<Vec<_>>();
+
+		// run voter in background. scheduling it to shut down at the end.
+		// futures::executor::block_on(testa(voter));
+		pool.spawner().spawn(routing_network).unwrap();
+
+		// wait for the best block to finalized.
+		pool.run_until(futures::future::join_all(finalized_streams.into_iter()));
+	}
+
+	#[test]
+	fn view_change_when_primary_fail() {
+		let max_view = Arc::new(Mutex::new(0));
+		let max_view_clone = max_view.clone();
+
+		let voters_num = 4;
+		let online_voters_num = 4;
+		let voter_set = VoterSet::new((0..voters_num).into_iter().collect()).unwrap();
+
+		let (network, mut routing_network) = make_network();
+
+		routing_network.rule.lock().isolate_after(1, 2);
+		routing_network.register_global_validator_hook(Box::new(move |m| match m {
+			super::GlobalMessageIn::CatchUp(_, _) => {
+				panic!("should not receive catchup message.");
+			},
+			super::GlobalMessageIn::ViewChange(view_change) => {
+				let mut max_view = max_view.lock();
+				*max_view = view_change.new_view;
+			},
+			_ => {},
+		}));
+
+		let mut pool = LocalPool::new();
+
+		let finalized_streams = (0..online_voters_num)
+			.map(|local_id| {
+				// init chain
+				let env = Arc::new(DummyEnvironment::new(network.clone(), local_id));
+				let last_finalized = env.with_chain(|chain| {
+					chain.push_blocks(GENESIS_HASH, &["A", "B", "C", "D", "E"]);
+					chain.last_finalized()
+				});
+
+				let finalized = env.finalized_stream();
+				let mut voter = Voter::new(
+					env.clone(),
+					voter_set.clone(),
+					network.make_global_comms(local_id),
+					1,
+					last_finalized,
+				);
+
+				pool.spawner()
+					.spawn(async move {
+						let timeout = Delay::new(Duration::from_millis(30000));
+
+						let voter = Box::pin(voter.run());
+
+						futures::future::select(voter, timeout).await;
+					})
+					.unwrap();
+
+				finalized
+					.take_while(move |&(h, n)| {
+						log::info!("id: {}, finalized: hash: {}, block_height: {}", local_id, h, n);
+						futures::future::ready(n < 6)
+					})
+					.for_each(|_v| {
+						// log::info!("finalized: v: {:?}", v);
+						futures::future::ready(())
+					})
+			})
+			.collect::<Vec<_>>();
+
+		// run voter in background. scheduling it to shut down at the end.
+		// futures::executor::block_on(testa(voter));
+		pool.spawner().spawn(routing_network).unwrap();
+
+		// wait for the best block to finalized.
+		pool.run_until(futures::future::join_all(finalized_streams.into_iter()));
+		assert_eq!(*max_view_clone.lock(), 2);
+	}
+
+	#[test]
+	fn fail() {}
+
+	#[test]
+	fn skips_to_latest_view_after_catch_up() {
+		let voters_num = 5;
+		let voter_set = VoterSet::new((0..voters_num).into_iter().collect()).unwrap();
+
 		let (network, routing_network) = make_network();
+		let mut pool = LocalPool::new();
+
+		pool.spawner().spawn(routing_network).unwrap();
+
+		let (env, mut unsynced_voter) = {
+			let local_id = 5;
+
+			let env = Arc::new(DummyEnvironment::new(network.clone(), local_id));
+			let last_finalized = env.with_chain(|chain| {
+				chain.push_blocks(GENESIS_HASH, &["A", "B", "C", "D", "E"]);
+				chain.last_finalized()
+			});
+
+			let voter = Voter::new(
+				env.clone(),
+				voter_set.clone(),
+				network.make_global_comms(local_id),
+				1,
+				last_finalized,
+			);
+
+			(env, voter)
+		};
+
+		let pp = |id| crate::leader::SignedPrepare {
+			id,
+			signature: 1234,
+			prepare: crate::leader::Prepare { view: 1, target_hash: "C", target_number: 4 },
+		};
+
+		let cm = |id| crate::leader::SignedCommit {
+			id,
+			signature: 1234,
+			commit: crate::leader::Commit { view: 1, target_hash: "C", target_number: 4 },
+		};
+
+		network.send_message(GlobalMessageIn::CatchUp(
+			CatchUp {
+				view_number: 3,
+				base_number: 1,
+				base_hash: GENESIS_HASH,
+				prepares: vec![pp(0), pp(1), pp(2)],
+				commits: vec![cm(0), cm(1), cm(2)],
+			},
+			Callback::Blank,
+		));
+
+		let voter_state = unsynced_voter.voter_state();
+		assert_eq!(voter_state.get().background_views.get(&2), None);
+
+		// spawn the voter in the background
+		pool.spawner().spawn(async move { unsynced_voter.run().await }).unwrap();
+
+		// wait until it's caught up, it should skip to round 6 and send a
+		// finality notification for the block that was finalized by catching
+		// up.
+		let caught_up = future::poll_fn(|_| {
+			log::info!("polling");
+			if voter_state.get().best_view.0 == 3 {
+				Poll::Ready(())
+			} else {
+				Poll::Pending
+			}
+		});
+
+		let finalized = env.finalized_stream().take(1).for_each(|(h, n)| {
+			log::info!("finalized: hash: {}, block_height: {}", h, n);
+			futures::future::ready(())
+		});
+
+		pool.run_until(caught_up.then(|_| finalized));
+
+		assert_eq!(
+			voter_state.get().best_view,
+			(
+				3,
+				crate::leader::voter::report::ViewState::<Hash, Id> {
+					state: crate::leader::CurrentState::PrePrepare,
+					total_voters: 5,
+					threshold: 3,
+					preprepare_hash: Some("D"),
+					prepare_ids: Default::default(),
+					commit_ids: Default::default(),
+				}
+			)
+		);
+
+		// assert_eq!(
+		// 	voter_state.get().background_rounds.get(&5),
+		// 	Some(&report::RoundState::<Id> {
+		// 		total_weight,
+		// 		threshold_weight,
+		// 		prevote_current_weight: VoteWeight(3),
+		// 		prevote_ids: voter_ids.clone(),
+		// 		precommit_current_weight: VoteWeight(3),
+		// 		precommit_ids: voter_ids,
+		// 	})
+		// );
+	}
+
+    // TODO: if this necessary?
+	fn fail_then_recover() {
+		let max_view = Arc::new(Mutex::new(0));
+		let max_view_clone = max_view.clone();
+
+		let voters_num = 4;
+		let online_voters_num = 4;
+		let voter_set = VoterSet::new((0..voters_num).into_iter().collect()).unwrap();
+
+		let _fail_then_recover =
+			move |from: &Id, from_state: &VoterState, to: &Id, to_state: &VoterState| {
+				let node = 1;
+				let after = 2;
+				let recover = 4;
+
+				if (from == to) && (from == &node) {
+					true
+				} else if (from != &node && from_state.last_finalized >= recover) ||
+					(to == &node && to_state.last_finalized >= recover)
+				{
+					true
+				} else {
+					!((from == &node && from_state.last_finalized >= after) ||
+						(to == &node && to_state.last_finalized >= after))
+				}
+			};
+
+		let (network, mut routing_network) = make_network();
+
+		routing_network.rule.lock().add_rule(Box::new(_fail_then_recover));
+
+		routing_network.register_global_validator_hook(Box::new(move |m| match m {
+			super::GlobalMessageIn::CatchUp(_, _) => {
+				panic!("should not receive catchup message.");
+			},
+			super::GlobalMessageIn::ViewChange(view_change) => {
+				let mut max_view = max_view.lock();
+				*max_view = view_change.new_view;
+			},
+			_ => {},
+		}));
+
 		let mut pool = LocalPool::new();
 
 		let finalized_streams = (0..online_voters_num)
@@ -1102,12 +1489,12 @@ mod tests {
 					.unwrap();
 
 				finalized
-					.take_while(|&(_, n)| {
-						log::trace!("n: {}", n);
+					.take_while(move |&(h, n)| {
+						log::info!("id: {}, finalized: hash: {}, block_height: {}", local_id, h, n);
 						futures::future::ready(n < 6)
 					})
-					.for_each(|v| {
-						log::trace!("v: {:?}", v);
+					.for_each(|_v| {
+						// log::info!("finalized: v: {:?}", v);
 						futures::future::ready(())
 					})
 			})
@@ -1119,72 +1506,23 @@ mod tests {
 
 		// wait for the best block to finalized.
 		pool.run_until(futures::future::join_all(finalized_streams.into_iter()));
+		assert_eq!(*max_view_clone.lock(), 2);
 	}
 
-	// #[test]
-	// fn exposing_voter_state() {
-	// 	let voters_num = 4;
-	// 	let online_voters_num = 4;
-	// 	let voter_set = VoterSet::new((0..voters_num).into_iter().collect());
-	//
-	// 	let (network, routing_network) = make_network();
-	// 	let mut pool = LocalPool::new();
-	//
-	// 	let finalized_streams = (0..online_voters_num)
-	// 		.map(|local_id| {
-	// 			// init chain
-	// 			let env = Arc::new(DummyEnvironment::new(network.clone(), local_id));
-	// 			let last_finalized = env.with_chain(|chain| {
-	// 				chain.push_blocks(GENESIS_HASH, &["A", "B", "C", "D", "E"]);
-	// 				chain.last_finalized()
-	// 			});
-	//
-	// 			let finalized = env.finalized_stream();
-	// 			let mut voter = Voter::new(
-	// 				env.clone(),
-	// 				voter_set.clone(),
-	// 				network.make_global_comms(),
-	// 				1,
-	// 				last_finalized,
-	// 			);
-	//
-	// 			pool.spawner()
-	// 				.spawn(async move {
-	// 					voter.run().await;
-	// 				})
-	// 				.unwrap();
-	//
-	// 			finalized
-	// 				.take_while(|&(_, n)| {
-	// 					log::trace!("n: {}", n);
-	// 					futures::future::ready(n < 6)
-	// 				})
-	// 				.for_each(|v| {
-	// 					log::trace!("v: {:?}", v);
-	// 					futures::future::ready(())
-	// 				})
-	// 		})
-	// 		.collect::<Vec<_>>();
-	//
-	// 	// run voter in background. scheduling it to shut down at the end.
-	// 	// futures::executor::block_on(testa(voter));
-	// 	pool.spawner().spawn(routing_network).unwrap();
-	//
-	// 	// wait for the best block to finalized.
-	// 	pool.run_until(futures::future::join_all(finalized_streams.into_iter()));
-	// }
+	use std::{sync::Arc, task::Poll, time::Duration};
 
-	use std::sync::Arc;
-
-	use futures::{executor::LocalPool, task::SpawnExt, StreamExt};
+	use futures::{executor::LocalPool, future, task::SpawnExt, FutureExt, StreamExt};
+	use futures_timer::Delay;
+	use parking_lot::Mutex;
 
 	use crate::leader::{
 		testing::{
 			chain::GENESIS_HASH,
-			environment::{make_network, DummyEnvironment},
+			environment::{make_network, DummyEnvironment, VoterState},
+			Hash, Id,
 		},
-		VoterSet,
+		CatchUp, VoterSet,
 	};
 
-	use super::Voter;
+	use super::{Callback, GlobalMessageIn, Voter};
 }
