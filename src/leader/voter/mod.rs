@@ -223,7 +223,7 @@ pub(crate) struct PeerViewChange<Id, N, H, S> {
 	best_finzalized: Option<FinalizedCommit<N, H, S, Id>>,
 }
 
-impl<Id: Eq + std::hash::Hash, N: Clone, H: Clone, S: Clone> PeerViewChange<Id, N, H, S> {
+impl<Id: Eq + std::hash::Hash + Clone, N: Clone, H: Clone, S: Clone> PeerViewChange<Id, N, H, S> {
 	pub fn new() -> Self {
 		PeerViewChange { inner: HashMap::new(), best_finzalized: None }
 	}
@@ -259,7 +259,7 @@ impl<Id: Eq + std::hash::Hash, N: Clone, H: Clone, S: Clone> PeerViewChange<Id, 
 	/// TODO: docs
 	/// Return hightest valid view number.
 	pub fn exist_valid_view(
-		&mut self,
+		&self,
 		lowest_view: u64,
 		threshould: usize,
 	) -> Option<(u64, Option<FinalizedCommit<N, H, S, Id>>)> {
@@ -273,7 +273,7 @@ impl<Id: Eq + std::hash::Hash, N: Clone, H: Clone, S: Clone> PeerViewChange<Id, 
 			.filter(|(_, &c)| c >= threshould)
 			.map(|(v, _)| *v)
 			.next()
-			.map(|v| (v, self.best_finzalized.take()))
+			.map(|v| (v, self.best_finzalized.clone()))
 	}
 
 	/// For catch-up message.
@@ -1420,7 +1420,7 @@ mod tests {
 		// );
 	}
 
-    // TODO: if this necessary?
+	// TODO: if this necessary?
 	fn fail_then_recover() {
 		let max_view = Arc::new(Mutex::new(0));
 		let max_view_clone = max_view.clone();
