@@ -374,7 +374,6 @@ where
 		let message_log = view_round.message_log.clone();
 
 		// FIXME: optimize
-		// log::trace!("{:?} process_voting_round {:?}", inner.id, inner.view);
 		let a = ViewRound::<E>::process_incoming(&mut inner_incoming, message_log).fuse();
 		let b = view_round.progress().fuse();
 
@@ -971,8 +970,12 @@ where
 		self.commit().await?;
 
 		if let Some(f_commit) = self.validate_commit() {
-			log::trace!(target: "afp", "{:?} in view {} valid commit", self.id, self.view);
-			let _ = self.env.finalize_block(self.view, hash, height, f_commit);
+			// Skip if we already have a same finalized commit.
+            // TODO: maybe further check the commit is the same?
+			if self.message_log.lock().last_round_base.0 == height {
+				log::trace!(target: "afp", "{:?} in view {} valid commit", self.id, self.view);
+				let _ = self.env.finalize_block(self.view, hash, height, f_commit);
+			}
 		} else {
 			return Err(Error::CommitNotEnough.into())
 		}
