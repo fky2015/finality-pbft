@@ -254,7 +254,7 @@ impl<Id: Eq + std::hash::Hash + Clone, N: Clone, H: Clone, S: Clone> PeerViewCha
 	pub fn exist_valid_view(
 		&self,
 		lowest_view: u64,
-		threshould: usize,
+		threshold: usize,
 	) -> Option<(u64, Option<FinalizedCommit<N, H, S, Id>>)> {
 		let mut count = HashMap::new();
 		self.inner.iter().filter(|(_, &v)| v >= lowest_view).for_each(|(_, &v)| {
@@ -263,7 +263,7 @@ impl<Id: Eq + std::hash::Hash + Clone, N: Clone, H: Clone, S: Clone> PeerViewCha
 
 		count
 			.iter()
-			.filter(|(_, &c)| c >= threshould)
+			.filter(|(_, &c)| c >= threshold)
 			.map(|(v, _)| *v)
 			.next()
 			.map(|v| (v, self.best_finzalized.clone()))
@@ -400,7 +400,7 @@ where
 			// wait for timeout.
 			Delay::new(Duration::from_millis(DELAY_VIEW_CHANGE_WAIT)).await;
 
-			let result = self.peer_view.lock().exist_valid_view(new_view, self.voters.threshould());
+			let result = self.peer_view.lock().exist_valid_view(new_view, self.voters.threshold());
 			// TODO: also, try to process catch-up message.
 			if let Some(new_view_info) = result {
 				if let Some(f_commit) = new_view_info.1.clone() {
@@ -621,7 +621,7 @@ where
 				report::ViewState {
 					state,
 					total_voters: view_round.voter_set.len().get(),
-					threshold: view_round.voter_set.threshould,
+					threshold: view_round.voter_set.threshold,
 					preprepare_hash: preprepare.map(|(_n, h)| h),
 					prepare_ids,
 					commit_ids,
@@ -882,7 +882,7 @@ where
 
 	fn validate_prepare(&mut self) -> bool {
 		let c = self.message_log.lock().count_prepares();
-		if c >= self.voter_set.threshould() {
+		if c >= self.voter_set.threshold() {
 			self.change_state(CurrentState::Commit)
 		}
 		true
@@ -892,7 +892,7 @@ where
 		&mut self,
 	) -> Option<FinalizedCommit<E::Number, E::Hash, E::Signature, E::Id>> {
 		let c = self.message_log.lock().count_commits();
-		if c >= self.voter_set.threshould() {
+		if c >= self.voter_set.threshold() {
 			self.change_state(CurrentState::PrePrepare);
 
 			let (target_height, target_hash) = self.message_log.lock().target.clone().unwrap();

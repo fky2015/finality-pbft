@@ -489,9 +489,9 @@ where
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct VoterSet<Id: Eq + Ord> {
 	voters: Vec<Id>,
-	/// The required number threshould for supermajority.
+	/// The required number threshold for supermajority.
 	/// Normally, it's > 2/3.
-	threshould: usize,
+	threshold: usize,
 }
 
 impl<Id: Eq + Ord + Clone> VoterSet<Id> {
@@ -500,7 +500,7 @@ impl<Id: Eq + Ord + Clone> VoterSet<Id> {
 			None
 		} else {
 			let len = voters.len() - (voters.len() - 1) / 3;
-			Some(Self { voters, threshould: len })
+			Some(Self { voters, threshold: len })
 		}
 	}
 
@@ -517,15 +517,15 @@ impl<Id: Eq + Ord + Clone> VoterSet<Id> {
 	}
 
 	pub fn is_full(&self) -> bool {
-		self.voters.len() >= self.threshould
+		self.voters.len() >= self.threshold
 	}
 
 	pub fn is_member(&self, id: &Id) -> bool {
 		self.voters.contains(id)
 	}
 
-	pub fn threshould(&self) -> usize {
-		self.threshould
+	pub fn threshold(&self) -> usize {
+		self.threshold
 	}
 
 	/// Get the size of the set.
@@ -614,11 +614,11 @@ mod test {
 	use super::*;
 
 	#[test]
-	fn test_threshould() {
-		assert_eq!(VoterSet::new((0..1).into_iter().collect()).unwrap().threshould, 1);
-		assert_eq!(VoterSet::new((0..2).into_iter().collect()).unwrap().threshould, 2);
-		assert_eq!(VoterSet::new((0..3).into_iter().collect()).unwrap().threshould, 3);
-		assert_eq!(VoterSet::new((0..4).into_iter().collect()).unwrap().threshould, 3);
-		assert_eq!(VoterSet::new((0..5).into_iter().collect()).unwrap().threshould, 4);
+	fn test_threshold() {
+		assert_eq!(VoterSet::new((0..1).into_iter().collect()).unwrap().threshold, 1);
+		assert_eq!(VoterSet::new((0..2).into_iter().collect()).unwrap().threshold, 2);
+		assert_eq!(VoterSet::new((0..3).into_iter().collect()).unwrap().threshold, 3);
+		assert_eq!(VoterSet::new((0..4).into_iter().collect()).unwrap().threshold, 3);
+		assert_eq!(VoterSet::new((0..5).into_iter().collect()).unwrap().threshold, 4);
 	}
 }
