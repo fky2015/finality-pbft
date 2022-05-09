@@ -330,6 +330,8 @@ where
 		// let (finalized_sender, finalized_notifications) = mpsc::unbounded();
 		let voter_data = env.voter_data();
 
+		log::info!("Voter::new voter set {:?}", voters);
+
 		let best_view = ViewRound::new(
 			current_view_number,
 			last_round_base.clone(),
