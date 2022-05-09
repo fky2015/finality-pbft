@@ -367,9 +367,10 @@ where
 	) -> Result<(E::Number, E::Hash), E::Error> {
 		let mut inner_incoming = view_round.incoming.take().expect("inner_incoming must exist.");
 		let message_log = view_round.message_log.clone();
+		let view = view_round.view;
 
 		// FIXME: optimize
-		let a = ViewRound::<E>::process_incoming(&mut inner_incoming, message_log).fuse();
+		let a = ViewRound::<E>::process_incoming(&mut inner_incoming, message_log, view).fuse();
 		let b = view_round.progress().fuse();
 
 		futures::pin_mut!(a, b);
@@ -481,6 +482,7 @@ where
 		peer_view_change: Arc<Mutex<PeerViewChange<E::Id, E::Number, E::Hash, E::Signature>>>,
 		local_id: E::Id,
 	) {
+		log::trace!(target: "afp", "Voter::process_global_incoming");
 		loop {
 			match global_incoming.try_next().await.unwrap().unwrap() {
 				GlobalMessageIn::Commit(_, _, _) => todo!(),
@@ -516,7 +518,9 @@ where
 					log::trace!(target: "afp", "{:?} view change message: {:?}", local_id, new_view);
 				},
 				GlobalMessageIn::Empty => {},
-			}
+			};
+
+			log::trace!(target: "afp", "received a global_incoming msg");
 		}
 	}
 
@@ -786,10 +790,15 @@ where
 	async fn process_incoming(
 		incoming: &mut E::In,
 		log: Arc<Mutex<Storage<E::Number, E::Hash, E::Signature, E::Id>>>,
+		view: u64,
 	) -> Result<(), E::Error> {
 		// FIXME: optimize
 		log::trace!(target: "afp", "start of process_incoming");
 		while let Some(msg) = incoming.try_next().await? {
+            if msg.view() != view {
+                continue;
+            }
+
 			log::trace!(target: "afp", "process_incoming: {:?}", msg);
 			let SignedMessage { message, signature, id } = msg;
 			log.lock().save_message(id, message, signature);

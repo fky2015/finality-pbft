@@ -219,6 +219,14 @@ impl<D, N: Copy> Message<N, D> {
 			Message::Commit(ref v) => (&v.target_hash, v.target_number),
 		}
 	}
+
+	pub fn view(&self) -> u64 {
+		match *self {
+			Message::PrePrepare(ref v) => v.view,
+			Message::Prepare(ref v) => v.view,
+			Message::Commit(ref v) => v.view,
+		}
+	}
 }
 
 /// A commit message which is an aggregate of commits.
@@ -252,6 +260,10 @@ impl<N: Copy, D, S, Id> SignedMessage<N, D, S, Id> {
 	/// Get the target block of the vote.
 	pub fn target(&self) -> (&D, N) {
 		self.message.target()
+	}
+
+	pub fn view(&self) -> u64 {
+		self.message.view()
 	}
 }
 
@@ -439,25 +451,36 @@ where
 impl<N, H, Id: Eq + Ord + std::hash::Hash, S> Storage<N, H, S, Id>
 where
 	Id: std::fmt::Debug,
-	H: std::fmt::Debug,
-	N: std::fmt::Debug,
+	H: std::fmt::Debug + Clone + std::cmp::PartialEq,
+	N: std::fmt::Debug + Clone + std::cmp::PartialEq + std::cmp::PartialOrd,
 	S: std::fmt::Debug,
 {
 	fn save_message(&mut self, from: Id, message: Message<N, H>, signature: S) {
-		#[cfg(feature = "std")]
-		log::trace!(target: "afp", "insert message to Storage, from: {:?}", from);
 		match message {
 			Message::Prepare(msg) => {
+				if let Some(target) = self.target.clone() {
+					if msg.target_number != target.0 && msg.target_hash != target.1 {
+						return
+					}
+				}
 				#[cfg(feature = "std")]
 				log::trace!(target: "afp", "insert message to Prepare, msg: {:?}", msg);
 				self.prepare.insert(from, (msg, signature));
 			},
 			Message::Commit(msg) => {
+				if let Some(target) = self.target.clone() {
+					if msg.target_number != target.0 && msg.target_hash != target.1 {
+						return
+					}
+				}
 				#[cfg(feature = "std")]
 				log::trace!(target: "afp", "insert message to Commit, msg: {:?}", msg);
 				self.commit.insert(from, (msg, signature));
 			},
 			Message::PrePrepare(msg) => {
+				if msg.target_number < self.last_round_base.0 {
+					return
+				}
 				#[cfg(feature = "std")]
 				log::trace!(target: "afp", "insert message to preprepare, msg: EmptyPrePrepare");
 				self.preprepare.insert(from, (msg, signature));
