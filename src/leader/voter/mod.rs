@@ -403,7 +403,9 @@ where
 			// wait for timeout.
 			Delay::new(Duration::from_millis(DELAY_VIEW_CHANGE_WAIT)).await;
 
-			let result = self.peer_view.lock().exist_valid_view(new_view, self.voters.threshold());
+			// Our view change message is not included in the log.
+			let result =
+				self.peer_view.lock().exist_valid_view(new_view, self.voters.threshold() - 1);
 			// TODO: also, try to process catch-up message.
 			if let Some(new_view_info) = result {
 				if let Some(f_commit) = new_view_info.1.clone() {
@@ -513,7 +515,9 @@ where
 					peer_view_change.lock().insert_best_common_finalized(f_commit);
 				},
 				GlobalMessageIn::ViewChange(ViewChange { new_view, id }) => {
-					// TODO: check before insert
+					if id == local_id {
+						continue
+					}
 					peer_view_change.lock().insert(id, new_view);
 					log::trace!(target: "afp", "{:?} view change message: {:?}", local_id, new_view);
 				},
@@ -795,9 +799,9 @@ where
 		// FIXME: optimize
 		log::trace!(target: "afp", "start of process_incoming");
 		while let Some(msg) = incoming.try_next().await? {
-            if msg.view() != view {
-                continue;
-            }
+			if msg.view() != view {
+				continue
+			}
 
 			log::trace!(target: "afp", "process_incoming: {:?}", msg);
 			let SignedMessage { message, signature, id } = msg;
