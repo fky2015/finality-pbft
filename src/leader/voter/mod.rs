@@ -1,5 +1,7 @@
 use std::{sync::Arc, time::Duration};
 
+// TODO: Deal with the voter_set (as well as voter_id) change between blocks.
+
 /// Callback used to pass information about the outcome of importing a given
 /// message (e.g. vote, commit, catch up). Useful to propagate data to the
 /// network after making sure the import is successful.
@@ -369,26 +371,33 @@ where
 		let message_log = view_round.message_log.clone();
 		let view = view_round.view;
 
-		// FIXME: optimize
-		let a = ViewRound::<E>::process_incoming(&mut inner_incoming, message_log, view).fuse();
-		let b = view_round.progress().fuse();
+		let res = {
+			let a_fused =
+				ViewRound::<E>::process_incoming(&mut inner_incoming, message_log, view).fuse();
+			let b_fused = view_round.progress().fuse();
 
-		futures::pin_mut!(a, b);
+			futures::pin_mut!(a_fused, b_fused);
 
-		futures::select! {
-			a = a => {
-				log::trace!(target: "afp", "a ready {:?}", a);
-				Err(super::Error::IncomingClosed.into())
+			futures::select! {
+				a = a_fused => {
+					log::trace!(target: "afp", "a ready {:?}", a);
+					Err(super::Error::IncomingClosed.into())
+				}
+				b = b_fused => {
+					log::trace!(target: "afp", "b ready {:?}", b);
+					b
+				}
 			}
-			b = b => {
-				log::trace!(target: "afp", "b ready {:?}", b);
-				b
-			}
-		}
+		};
+
+		// Move back.
+		view_round.incoming = Some(inner_incoming);
+
+		res
 	}
 
 	pub async fn change_view(&mut self) -> Result<u64, E::Error> {
-		const DELAY_VIEW_CHANGE_WAIT: u64 = 1000;
+		const DELAY_VIEW_CHANGE_WAIT: u64 = 500;
 		let new_view = self.current_view_number + 1;
 		loop {
 			log::info!(target: "afp", "id: {:?}, start view_change: {new_view}", self.local_id);
@@ -447,9 +456,9 @@ where
 	}
 
 	pub(crate) async fn run_voter(&mut self) {
-		loop {
-			let mut best_view = self.inner.lock().best_view.take_clone();
+		let mut best_view = self.inner.lock().best_view.take_clone();
 
+		loop {
 			// NOTE: this is a hack to make sure new network is activated, by sending a empty
 			// mesage to the network.
 			//
@@ -458,8 +467,6 @@ where
 			// a.1) In detail, the network should be created when the view number changed.
 			let _ = self.global_outgoing.send(GlobalMessageOut::Empty).await;
 
-			// run both global_incoming and view_round
-			// wait one of them return
 			let result =
 				Voter::<E, GlobalIn, GlobalOut>::process_voting_round(&mut best_view).await;
 
@@ -467,15 +474,18 @@ where
 			log::trace!(target: "afp", "{:?} current voting round finish: {:?}", self.local_id, result);
 			if let Err(e) = result {
 				log::warn!(target: "afp", "Error throw by ViewRound: {:?}", e);
-				// TODO: may need to change view
+
+				// Change to new view.
 				let new_view = self.change_view().await.unwrap();
+
 				self.current_view_number = new_view;
+
+				// Initiate a new view round.
+				self.inner.lock().best_view = self.new_view_round();
+				best_view = self.inner.lock().best_view.take_clone();
 			} else {
 				self.last_finalized_target = result.unwrap();
 			}
-
-			// Initiate a new view round.
-			self.inner.lock().best_view = self.new_view_round();
 		}
 	}
 
@@ -760,7 +770,7 @@ where
 		voter_set: VoterSet<E::Id>,
 		env: Arc<E>,
 	) -> Self {
-		let RoundData { voter_id, incoming, outgoing, .. } = env.round_data(view);
+		let RoundData { voter_id, incoming, outgoing } = env.round_data(view);
 
 		ViewRound {
 			env,
@@ -787,16 +797,23 @@ where
 	}
 
 	fn change_state(&self, state: CurrentState) {
-		// TODO: push log
+		// TODO: trace push log?
 		self.message_log.lock().current_state = state;
 	}
+
+	// TODO: Update state in a new round, but with same info.
+	//
+	// The arguments passed here are those which might be updated between round change (block
+	// change).
+	// fn update_round(&mut self, voter_set: VoterSet<E::Id>) {
+	// 	self.voter_set = voter_set;
+	// }
 
 	async fn process_incoming(
 		incoming: &mut E::In,
 		log: Arc<Mutex<Storage<E::Number, E::Hash, E::Signature, E::Id>>>,
 		view: u64,
 	) -> Result<(), E::Error> {
-		// FIXME: optimize
 		log::trace!(target: "afp", "start of process_incoming");
 		while let Some(msg) = incoming.try_next().await? {
 			if msg.view() != view {
@@ -834,9 +851,14 @@ where
 	}
 
 	async fn preprepare(&mut self) -> Result<(), E::Error> {
+		// This should longer than view_change duration.
+		const DELAY_BEFORE_PRE_PREPARE_MILLI: u64 = 1000;
 		const DELAY_PRE_PREPARE_MILLI: u64 = 1000;
 
 		let last_round_base = self.message_log.lock().last_round_base.clone();
+		let seq = self.message_log.lock().seq();
+
+		Delay::new(Duration::from_millis(DELAY_BEFORE_PRE_PREPARE_MILLI)).await;
 
 		// get preprepare hash
 		let (height, hash) = self.env.preprepare(self.view, last_round_base.1).await?.unwrap();
@@ -844,7 +866,7 @@ where
 
 		self.update_current_target((height, hash.clone()));
 
-		let preprepare = PrePrepare::new(self.view, height, hash);
+		let preprepare = PrePrepare::new(self.view, seq, height, hash);
 		self.multicast(Message::PrePrepare(preprepare)).await?;
 
 		log::trace!(target: "afp", "{:?} sleep {} ms.", self.id, DELAY_PRE_PREPARE_MILLI);
@@ -865,8 +887,9 @@ where
 		self.change_state(CurrentState::Prepare);
 
 		let (height, hash) = self.message_log.lock().target.clone().unwrap();
+		let seq = self.message_log.lock().seq();
 
-		let prepare_msg = Message::Prepare(Prepare::new(self.view, height, hash));
+		let prepare_msg = Message::Prepare(Prepare::new(self.view, seq, height, hash));
 
 		self.multicast(prepare_msg).await?;
 
@@ -883,8 +906,9 @@ where
 		self.validate_prepare();
 
 		let (height, hash) = self.message_log.lock().target.clone().unwrap();
+		let seq = self.message_log.lock().seq();
 
-		let commit = Commit::new(self.view, height, hash);
+		let commit = Commit::new(self.view, seq, height, hash);
 
 		let commit_msg = Message::Commit(commit);
 
@@ -991,6 +1015,13 @@ where
 		log::trace!(target: "afp", "{:?} ViewRound::END {:?}", self.id, self.view);
 
 		self.primary_alive()?;
+
+		{
+			let mut message_log = self.message_log.lock();
+			message_log.clear_votes();
+			message_log.bump_seq();
+			message_log.last_round_base = message_log.target.clone().unwrap();
+		};
 
 		Ok(self
 			.message_log
@@ -1327,6 +1358,8 @@ mod tests {
 
 	#[test]
 	fn skips_to_latest_view_after_catch_up() {
+		// simple_logger::init_with_level(log::Level::Trace).unwrap();
+
 		let voters_num = 5;
 		let voter_set = VoterSet::new((0..voters_num).into_iter().collect()).unwrap();
 
@@ -1358,13 +1391,13 @@ mod tests {
 		let pp = |id| crate::leader::SignedPrepare {
 			id,
 			signature: 1234,
-			prepare: crate::leader::Prepare { view: 1, target_hash: "C", target_number: 4 },
+			prepare: crate::leader::Prepare { view: 1, seq: 2, target_hash: "C", target_number: 4 },
 		};
 
 		let cm = |id| crate::leader::SignedCommit {
 			id,
 			signature: 1234,
-			commit: crate::leader::Commit { view: 1, target_hash: "C", target_number: 4 },
+			commit: crate::leader::Commit { view: 1, seq: 2, target_hash: "C", target_number: 4 },
 		};
 
 		network.send_message(GlobalMessageIn::CatchUp(
@@ -1398,7 +1431,7 @@ mod tests {
 
 		let finalized = env.finalized_stream().take(1).for_each(|(h, n)| {
 			log::info!("finalized: hash: {}, block_height: {}", h, n);
-			futures::future::ready(())
+			Delay::new(Duration::from_millis(1100))
 		});
 
 		pool.run_until(caught_up.then(|_| finalized));

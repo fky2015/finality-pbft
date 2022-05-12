@@ -107,14 +107,15 @@ impl std::error::Error for Error {}
 #[cfg_attr(feature = "derive-codec", derive(Encode, Decode, TypeInfo))]
 pub struct PrePrepare<N, D> {
 	pub view: u64,
+	pub seq: u64,
 	pub target_number: N,
 	pub target_hash: D,
 }
 
 impl<N, D> PrePrepare<N, D> {
 	/// Create a new preprepare message.
-	pub fn new(view: u64, target_number: N, target_hash: D) -> Self {
-		PrePrepare { view, target_number, target_hash }
+	pub fn new(view: u64, seq: u64, target_number: N, target_hash: D) -> Self {
+		PrePrepare { view, seq, target_number, target_hash }
 	}
 }
 
@@ -137,7 +138,8 @@ pub struct SignedPrePrepare<N, D, S, Id> {
 pub struct Prepare<N, D> {
 	/// The view number.
 	pub view: u64,
-	/// The sequence number.
+	pub seq: u64,
+	/// The target block's number.
 	pub target_number: N,
 	/// The target block's hash.
 	pub target_hash: D,
@@ -145,8 +147,8 @@ pub struct Prepare<N, D> {
 
 impl<N, D> Prepare<N, D> {
 	/// Create a new prepare message.
-	pub fn new(view: u64, seq_number: N, digest: D) -> Self {
-		Prepare { view, target_number: seq_number, target_hash: digest }
+	pub fn new(view: u64, seq: u64, target_number: N, digest: D) -> Self {
+		Prepare { view, seq, target_number, target_hash: digest }
 	}
 }
 
@@ -169,6 +171,7 @@ pub struct SignedPrepare<N, D, S, Id> {
 pub struct Commit<N, D> {
 	/// The view number.
 	pub view: u64,
+	pub seq: u64,
 	/// The sequence number.
 	pub target_number: N,
 	/// The target block's hash.
@@ -177,8 +180,8 @@ pub struct Commit<N, D> {
 
 impl<N, D> Commit<N, D> {
 	/// Create a new commit message.
-	pub fn new(view: u64, seq_number: N, target_hash: D) -> Self {
-		Commit { view, target_number: seq_number, target_hash }
+	pub fn new(view: u64, seq: u64, target_number: N, target_hash: D) -> Self {
+		Commit { view, seq, target_number, target_hash }
 	}
 }
 
@@ -227,6 +230,14 @@ impl<D, N: Copy> Message<N, D> {
 			Message::Commit(ref v) => v.view,
 		}
 	}
+
+	pub fn seq(&self) -> u64 {
+		match *self {
+			Message::PrePrepare(ref v) => v.seq,
+			Message::Prepare(ref v) => v.seq,
+			Message::Commit(ref v) => v.seq,
+		}
+	}
 }
 
 /// A commit message which is an aggregate of commits.
@@ -264,6 +275,10 @@ impl<N: Copy, D, S, Id> SignedMessage<N, D, S, Id> {
 
 	pub fn view(&self) -> u64 {
 		self.message.view()
+	}
+
+	pub fn seq(&self) -> u64 {
+		self.message.seq()
 	}
 }
 
@@ -355,10 +370,6 @@ pub enum CurrentState {
 	PrePrepare,
 	Prepare,
 	Commit,
-	// Current View should gracefully shutdown since higher view presents.
-	// ChangeView,
-	// ViewChangeAck,
-	// NewView,
 }
 
 /// Arithmetic necessary for a block number.
@@ -388,6 +399,7 @@ where
 /// similar to: [`round::Round`]
 #[cfg_attr(any(feature = "std", test), derive(Debug))]
 pub(crate) struct Storage<N, D, S, Id> {
+	seq: u64,
 	last_round_base: (N, D),
 	current_state: CurrentState,
 	// from valid preprepare msg.
@@ -422,6 +434,7 @@ where
 {
 	fn new(last_round_base: (N, H)) -> Self {
 		Self {
+			seq: 0,
 			last_round_base,
 			current_state: CurrentState::PrePrepare,
 			target: None,
@@ -437,6 +450,19 @@ where
 			self.commit.contains_key(key)
 	}
 
+	fn seq(&self) -> u64 {
+		self.seq
+	}
+
+	fn bump_seq(&mut self) {
+		self.seq += 1;
+	}
+
+	fn clear_votes(&mut self) {
+		self.preprepare.clear();
+		self.prepare.clear();
+		self.commit.clear();
+	}
 	// Return state of the view.
 	// TODO: maybe used in testing RotingRule.
 	// pub fn state(&self) -> State<H, N> {
@@ -450,29 +476,37 @@ where
 
 impl<N, H, Id: Eq + Ord + std::hash::Hash, S> Storage<N, H, S, Id>
 where
-	Id: std::fmt::Debug,
+	Id: std::fmt::Debug + Clone,
 	H: std::fmt::Debug + Clone + std::cmp::PartialEq,
-	N: std::fmt::Debug + Clone + std::cmp::PartialEq + std::cmp::PartialOrd,
+	N: std::fmt::Debug + Clone + std::cmp::PartialEq + std::cmp::PartialOrd + Copy,
 	S: std::fmt::Debug,
 {
+	fn target(&self) -> Option<(&H, N)> {
+		self.target.as_ref().map(|(n, h)| (h, *n))
+	}
+
 	fn save_message(&mut self, from: Id, message: Message<N, H>, signature: S) {
+		if message.seq() != self.seq() || self.target().map_or(false, |t| t != message.target()) {
+			return
+		}
+
 		match message {
 			Message::Prepare(msg) => {
-				if let Some(target) = self.target.clone() {
-					if msg.target_number != target.0 && msg.target_hash != target.1 {
-						return
-					}
-				}
+				// if let Some(target) = self.target.clone() {
+				// 	if msg.target_number != target.0 && msg.target_hash != target.1 {
+				// 		return
+				// 	}
+				// }
 				#[cfg(feature = "std")]
 				log::trace!(target: "afp", "insert message to Prepare, msg: {:?}", msg);
 				self.prepare.insert(from, (msg, signature));
 			},
 			Message::Commit(msg) => {
-				if let Some(target) = self.target.clone() {
-					if msg.target_number != target.0 && msg.target_hash != target.1 {
-						return
-					}
-				}
+				// if let Some(target) = self.target.clone() {
+				// 	if msg.target_number != target.0 && msg.target_hash != target.1 {
+				// 		return
+				// 	}
+				// }
 				#[cfg(feature = "std")]
 				log::trace!(target: "afp", "insert message to Commit, msg: {:?}", msg);
 				self.commit.insert(from, (msg, signature));
