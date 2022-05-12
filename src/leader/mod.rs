@@ -610,7 +610,7 @@ impl<Id: Eq + Ord + Clone> VoterSet<Id> {
 
 	/// Whether the set contains a voter with the given ID.
 	pub fn contains(&self, id: &Id) -> bool {
-		self.voters.binary_search_by_key(&id, |id| id).is_ok()
+		self.voters.contains(id)
 	}
 
 	/// Get an iterator over the voters in the set, as given by
@@ -621,7 +621,11 @@ impl<Id: Eq + Ord + Clone> VoterSet<Id> {
 
 	/// Get the voter info for the voter with the given ID, if any.
 	pub fn get(&self, id: &Id) -> Option<&Id> {
-		self.voters.binary_search_by_key(&id, |id| id).ok().map(|idx| &self.voters[idx])
+		if let Some(pos) = self.voters.iter().position(|i| id == i) {
+			self.voters.get(pos)
+		} else {
+			None
+		}
 	}
 }
 
