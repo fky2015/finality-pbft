@@ -366,10 +366,14 @@ impl<Id> ViewChange<Id> {
 #[cfg_attr(any(feature = "std", test), derive(Debug))]
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub enum CurrentState {
-	// Initial state.
+	/// Initial state. Indicate that a voter is in PREPREPARE stage.
 	PrePrepare,
+	/// Indicate that a voter is in PREPARE stage.
 	Prepare,
+	/// Indicate that a voter is in COMMIT stage.
 	Commit,
+	/// FinalizedCommit
+	Finalize,
 }
 
 /// Arithmetic necessary for a block number.
@@ -398,10 +402,11 @@ where
 
 /// similar to: [`round::Round`]
 #[cfg_attr(any(feature = "std", test), derive(Debug))]
-pub(crate) struct Storage<N, D, S, Id> {
+pub(crate) struct Storage<N, D, S, Id: Eq + Ord> {
 	seq: u64,
 	last_round_base: (N, D),
 	current_state: CurrentState,
+	voters: VoterSet<Id>,
 	// from valid preprepare msg.
 	target: Option<(N, D)>,
 	preprepare: BTreeMap<Id, (PrePrepare<N, D>, S)>,
@@ -429,15 +434,17 @@ impl<H: Clone, N: Clone> State<H, N> {
 impl<N, H, Id, S> Storage<N, H, S, Id>
 where
 	Id: Clone + Eq + std::hash::Hash + Ord + std::fmt::Debug,
-	H: std::fmt::Debug,
-	N: std::fmt::Debug,
+	H: std::fmt::Debug + Clone,
+	N: std::fmt::Debug + Clone,
+	S: Clone,
 {
-	fn new(last_round_base: (N, H)) -> Self {
+	fn new(last_round_base: (N, H), voters: VoterSet<Id>) -> Self {
 		Self {
 			seq: 0,
 			last_round_base,
 			current_state: CurrentState::PrePrepare,
 			target: None,
+			voters,
 			preprepare: Default::default(),
 			prepare: Default::default(),
 			commit: Default::default(),
@@ -463,6 +470,40 @@ where
 		self.prepare.clear();
 		self.commit.clear();
 	}
+
+	/// Clear state related to a round.
+	///
+	/// Can be used in a in-view catch up or start the new round.
+	fn clear_rounds(&mut self) {
+		self.clear_votes();
+		self.target = None;
+		self.current_state = CurrentState::PrePrepare;
+	}
+
+	fn gen_prepare(&self, view: u64) {
+		// TODO:
+	}
+
+	/// Should be called only if current_state == Finalize
+	fn gen_f_commit(&self) -> Option<FinalizedCommit<N, H, S, Id>> {
+		if self.current_state == CurrentState::Finalize {
+			let (target_height, target_hash) = self.target.clone().unwrap();
+			let commits = self
+				.commit
+				.iter()
+				.map(|(id, (commit, sig))| SignedCommit {
+					commit: commit.clone(),
+					signature: sig.clone(),
+					id: id.clone(),
+				})
+				.collect();
+			let f_commit = FinalizedCommit { target_hash, target_number: target_height, commits };
+			Some(f_commit)
+		} else {
+			None
+		}
+	}
+
 	// Return state of the view.
 	// TODO: maybe used in testing RotingRule.
 	// pub fn state(&self) -> State<H, N> {
@@ -479,18 +520,60 @@ where
 	Id: std::fmt::Debug + Clone,
 	H: std::fmt::Debug + Clone + std::cmp::PartialEq,
 	N: std::fmt::Debug + Clone + std::cmp::PartialEq + std::cmp::PartialOrd + Copy,
-	S: std::fmt::Debug,
+	S: std::fmt::Debug + Clone,
 {
 	fn target(&self) -> Option<(&H, N)> {
 		self.target.as_ref().map(|(n, h)| (h, *n))
 	}
 
+	/// Calling save_message will update CurrentState automaticallly.
+	///
+	/// When message is coming:
+	/// 1. If it has the samve seq number, save and check if it's valid to update to next state.
+	/// 2. Or if its seq number larger than ours, then we move to next seq.
+	///   - clean current state and logs
+	/// 3. Discard others.
 	fn save_message(&mut self, from: Id, message: Message<N, H>, signature: S) {
-		if message.seq() != self.seq() || self.target().map_or(false, |t| t != message.target()) {
+		if message.seq() < self.seq() {
+			return
+		} else if message.seq() > self.seq() {
+			// Clean votes and target.
+			self.clear_votes();
+			self.target = None;
+			self.current_state = CurrentState::PrePrepare;
+
+			self.seq = message.seq();
+		}
+
+		if self.seq == message.seq() && self.target().map_or(false, |t| t != message.target()) {
+			log::warn!(target:"afp", "find a different target with same seq. our: {:?}, theirs: {:?}", self.target(), message.target());
 			return
 		}
 
 		match message {
+			Message::PrePrepare(msg) => {
+				if msg.target_number < self.last_round_base.0 {
+					return
+				}
+				#[cfg(feature = "std")]
+				log::trace!(target: "afp", "insert message to preprepare, msg: {:?}", msg);
+				self.preprepare.insert(from.clone(), (msg.clone(), signature));
+
+				if self.current_state == CurrentState::PrePrepare &&
+					self.validate_primary_preprepare(msg.view)
+				{
+					self.current_state = CurrentState::Prepare
+				}
+
+				if self.voters.get_primary(msg.view) == from {
+					self.target = Some((msg.target_number, msg.target_hash))
+				}
+
+				#[cfg(feature = "std")]
+				log::trace!(target: "afp", "storage: {:?}", self);
+				#[cfg(feature = "std")]
+				log::trace!(target: "afp", "insert message to preprepare finish.");
+			},
 			Message::Prepare(msg) => {
 				// if let Some(target) = self.target.clone() {
 				// 	if msg.target_number != target.0 && msg.target_hash != target.1 {
@@ -500,6 +583,12 @@ where
 				#[cfg(feature = "std")]
 				log::trace!(target: "afp", "insert message to Prepare, msg: {:?}", msg);
 				self.prepare.insert(from, (msg, signature));
+
+				if self.current_state == CurrentState::Prepare &&
+					self.count_prepares() >= self.voters.threshold()
+				{
+					self.current_state = CurrentState::Commit;
+				}
 			},
 			Message::Commit(msg) => {
 				// if let Some(target) = self.target.clone() {
@@ -510,14 +599,12 @@ where
 				#[cfg(feature = "std")]
 				log::trace!(target: "afp", "insert message to Commit, msg: {:?}", msg);
 				self.commit.insert(from, (msg, signature));
-			},
-			Message::PrePrepare(msg) => {
-				if msg.target_number < self.last_round_base.0 {
-					return
+
+				if self.current_state == CurrentState::Commit &&
+					self.count_commits() >= self.voters.threshold()
+				{
+					self.current_state = CurrentState::Finalize;
 				}
-				#[cfg(feature = "std")]
-				log::trace!(target: "afp", "insert message to preprepare, msg: EmptyPrePrepare");
-				self.preprepare.insert(from, (msg, signature));
 			},
 		}
 	}
@@ -540,6 +627,12 @@ where
 
 	fn count_commits(&self) -> usize {
 		self.commit.len()
+	}
+
+	fn validate_primary_preprepare(&self, view: u64) -> bool {
+		let primary = self.voters.get_primary(view);
+
+		self.preprepare.contains_key(&primary)
 	}
 }
 

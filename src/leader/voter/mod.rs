@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::{sync::Arc, task::Poll, time::Duration};
 
 // TODO: Deal with the voter_set (as well as voter_id) change between blocks.
 
@@ -498,10 +498,7 @@ where
 		loop {
 			match global_incoming.try_next().await.unwrap().unwrap() {
 				GlobalMessageIn::Commit(_, _, _) => todo!(),
-				GlobalMessageIn::CatchUp(
-					CatchUp { view_number, prepares, commits, base_hash, base_number },
-					_cb,
-				) => {
+				GlobalMessageIn::CatchUp(CatchUp { view_number, commits, .. }, _cb) => {
 					// catch up will only be accepted when voter is during a view changing (not
 					// voting).
 					// This could be checked by finding self view change message.
@@ -775,8 +772,8 @@ where
 		ViewRound {
 			env,
 			view,
-			voter_set,
-			message_log: Arc::new(Mutex::new(Storage::new(last_round_base))),
+			voter_set: voter_set.clone(),
+			message_log: Arc::new(Mutex::new(Storage::new(last_round_base, voter_set))),
 			id: voter_id,
 			incoming: Some(incoming),
 			// TODO: why bufferd
@@ -833,46 +830,47 @@ where
 		self.voter_set.get_primary(self.view) == self.id
 	}
 
-	fn validate_preprepare(&mut self) -> bool {
-		log::trace!(target: "afp", "{:?} start validate_preprepare", self.id);
-		if self.is_primary() {
-			self.change_state(CurrentState::Prepare);
-		} else {
-			// TODO: A backup i accepts the PRE_PREPARE message provoided it has not accepts a PRE-PREPARE
-			// for view v and sequence number n containing a different digeset.
-			// ask environment for new block
-			self.change_state(CurrentState::Prepare);
-		}
-		true
-	}
-
-	fn update_current_target(&self, target: (E::Number, E::Hash)) {
-		self.message_log.lock().target = Some(target);
-	}
-
 	async fn preprepare(&mut self) -> Result<(), E::Error> {
 		// This should longer than view_change duration.
 		const DELAY_BEFORE_PRE_PREPARE_MILLI: u64 = 1000;
 		const DELAY_PRE_PREPARE_MILLI: u64 = 1000;
 
-		let last_round_base = self.message_log.lock().last_round_base.clone();
-		let seq = self.message_log.lock().seq();
+		log::trace!(target: "afp", "PREPREPARE start.");
 
+		// This sleep is a must.
 		Delay::new(Duration::from_millis(DELAY_BEFORE_PRE_PREPARE_MILLI)).await;
 
+		// The PrePrepare is only meaningful if we are primary node.
+		//
+		// But we still allow other nodes to send preprepare,
+		// so that time elapse is consistent.
+		let last_round_base = self.message_log.lock().last_round_base.clone();
 		// get preprepare hash
 		let (height, hash) = self.env.preprepare(self.view, last_round_base.1).await?.unwrap();
 		log::trace!(target: "afp", "{:?} preprepare_hash: {:?}", self.id, hash);
 
-		self.update_current_target((height, hash.clone()));
-
+		let seq = self.message_log.lock().seq();
 		let preprepare = PrePrepare::new(self.view, seq, height, hash);
+
 		self.multicast(Message::PrePrepare(preprepare)).await?;
 
-		log::trace!(target: "afp", "{:?} sleep {} ms.", self.id, DELAY_PRE_PREPARE_MILLI);
-		Delay::new(Duration::from_millis(DELAY_PRE_PREPARE_MILLI)).await;
+		if self.message_log.lock().current_state == CurrentState::PrePrepare {
+			log::trace!(target: "afp", "PREPREPARE sleep.");
+			let log = self.message_log.clone();
+			let mut timeout = Delay::new(Duration::from_millis(DELAY_PRE_PREPARE_MILLI));
+			let timeout_wait = futures::future::poll_fn(|cx| {
+				if log.lock().current_state == CurrentState::PrePrepare {
+					timeout.poll_unpin(cx)
+				} else {
+					Poll::Ready(())
+				}
+			});
+			timeout_wait.await;
+			log::trace!(target: "afp", "PREPREPARE finish sleep.");
+			// Delay::new(Duration::from_millis(DELAY_PRE_PREPARE_MILLI)).await;
+		}
 
-		log::trace!(target: "afp", "{:?} finish preprepare.", self.id);
+		log::trace!(target: "afp", "PREPREPARE finish.");
 		Ok(())
 	}
 
@@ -880,11 +878,8 @@ where
 	///
 	/// Called at end of pre-prepare or beginning of prepare.
 	async fn prepare(&mut self) -> Result<(), E::Error> {
-		log::trace!(target: "afp", "{:?} start prepare", self.id);
+		log::trace!(target: "afp", "PREPARE start prepare");
 		const DELAY_PREPARE_MILLI: u64 = 1000;
-
-		// TODO: currently, change state without condition.
-		self.change_state(CurrentState::Prepare);
 
 		let (height, hash) = self.message_log.lock().target.clone().unwrap();
 		let seq = self.message_log.lock().seq();
@@ -893,17 +888,30 @@ where
 
 		self.multicast(prepare_msg).await?;
 
-		Delay::new(Duration::from_millis(DELAY_PREPARE_MILLI)).await;
-		log::trace!(target: "afp", "{:?} end prepare", self.id);
+		if self.message_log.lock().current_state == CurrentState::Prepare {
+			log::trace!(target: "afp", "PREPARE sleep.");
+			let log = self.message_log.clone();
+			let mut timeout = Delay::new(Duration::from_millis(DELAY_PREPARE_MILLI));
+			let timeout_wait = futures::future::poll_fn(|cx| {
+				if log.lock().current_state == CurrentState::Prepare {
+					timeout.poll_unpin(cx)
+				} else {
+					Poll::Ready(())
+				}
+			});
+			timeout_wait.await;
+			log::trace!(target: "afp", "PREPARE finish sleep.");
+			// Delay::new(Duration::from_millis(DELAY_PREPARE_MILLI)).await;
+		}
+
+		log::trace!(target: "afp", "PREPARE prepare finish.");
 		Ok(())
 	}
 
 	/// Enter Commit phase
 	async fn commit(&mut self) -> Result<(), E::Error> {
-		log::trace!(target: "afp", "{:?} start commit", self.id);
+		log::trace!(target: "afp", "COMMIT start commit");
 		const DELAY_COMMIT_MILLI: u64 = 1000;
-
-		self.validate_prepare();
 
 		let (height, hash) = self.message_log.lock().target.clone().unwrap();
 		let seq = self.message_log.lock().seq();
@@ -914,45 +922,24 @@ where
 
 		self.multicast(commit_msg).await?;
 
-		Delay::new(Duration::from_millis(DELAY_COMMIT_MILLI)).await;
-		log::trace!(target: "afp", "{:?} end commit", self.id);
+		if self.message_log.lock().current_state == CurrentState::Commit {
+			log::trace!(target: "afp", "COMMIT sleep.");
+			let log = self.message_log.clone();
+			let mut timeout = Delay::new(Duration::from_millis(DELAY_COMMIT_MILLI));
+			let timeout_wait = futures::future::poll_fn(|cx| {
+				if log.lock().current_state == CurrentState::Commit {
+					timeout.poll_unpin(cx)
+				} else {
+					Poll::Ready(())
+				}
+			});
+			timeout_wait.await;
+			log::trace!(target: "afp", "COMMIT finish sleep.");
+			// Delay::new(Duration::from_millis(DELAY_COMMIT_MILLI)).await;
+		}
+
+		log::trace!(target: "afp", "COMMIT end commit");
 		Ok(())
-	}
-
-	fn validate_prepare(&mut self) -> bool {
-		let c = self.message_log.lock().count_prepares();
-		if c >= self.voter_set.threshold() {
-			self.change_state(CurrentState::Commit)
-		}
-		true
-	}
-
-	fn validate_commit(
-		&mut self,
-	) -> Option<FinalizedCommit<E::Number, E::Hash, E::Signature, E::Id>> {
-		let c = self.message_log.lock().count_commits();
-		if c >= self.voter_set.threshold() {
-			self.change_state(CurrentState::PrePrepare);
-
-			let (target_height, target_hash) = self.message_log.lock().target.clone().unwrap();
-			let commits = self
-				.message_log
-				.lock()
-				.commit
-				.iter()
-				.map(|(id, (commit, sig))| SignedCommit {
-					commit: commit.clone(),
-					signature: sig.clone(),
-					id: id.clone(),
-				})
-				.collect();
-
-			let f_commit = FinalizedCommit { target_hash, target_number: target_height, commits };
-
-			return Some(f_commit)
-		}
-		log::info!(target: "afp", "{:?} commit not enough", self.id);
-		None
 	}
 
 	async fn multicast(&mut self, msg: Message<E::Number, E::Hash>) -> Result<(), E::Error> {
@@ -1001,12 +988,17 @@ where
 		// commit
 		self.commit().await?;
 
-		if let Some(f_commit) = self.validate_commit() {
+		let f_commit = self.message_log.lock().gen_f_commit();
+
+		if let Some(f_commit) = f_commit {
+			log::debug!(target: "afp", "generated a new finalized_commit.");
 			// Skip if we already have a same finalized commit.
 			// TODO: maybe further check the commit is the same?
-			if self.message_log.lock().last_round_base.0 == height {
-				log::trace!(target: "afp", "{:?} in view {} valid commit", self.id, self.view);
-				let _ = self.env.finalize_block(self.view, hash, height, f_commit);
+			if self.message_log.lock().last_round_base.0.clone() != height {
+				log::trace!(target: "afp", "{:?} in view {} finalized a new commit", self.id, self.view);
+				let _ = self.env.finalize_block(self.view, hash.to_owned(), height, f_commit);
+			} else {
+				log::trace!(target: "afp", "skip already finalized block");
 			}
 		} else {
 			return Err(Error::CommitNotEnough.into())
@@ -1018,17 +1010,13 @@ where
 
 		{
 			let mut message_log = self.message_log.lock();
-			message_log.clear_votes();
 			message_log.bump_seq();
 			message_log.last_round_base = message_log.target.clone().unwrap();
+
+			message_log.clear_rounds();
 		};
 
-		Ok(self
-			.message_log
-			.lock()
-			.target
-			.clone()
-			.expect("We've already check this value in advance; qed"))
+		Ok((height, hash))
 	}
 }
 
@@ -1069,6 +1057,7 @@ mod tests {
 	// // communication test
 	#[test]
 	fn talking_to_myself() {
+		// simple_logger::init_with_level(log::Level::Trace).unwrap();
 		let local_id = 5;
 		let voter_set = VoterSet::new(vec![5]).unwrap();
 
@@ -1227,6 +1216,7 @@ mod tests {
 
 	#[test]
 	fn view_did_not_change_when_primary_alive_without_new_preprepare() {
+		simple_logger::init_with_level(log::Level::Trace).unwrap();
 		let voters_num = 4;
 		let online_voters_num = 4;
 		let voter_set = VoterSet::new((0..voters_num).into_iter().collect()).unwrap();
@@ -1264,10 +1254,13 @@ mod tests {
 					})
 					.unwrap();
 
-				finalized.take(6).for_each(|(_h, n)| {
-					assert!(n < 4, "block_number should less than 4.");
-					futures::future::ready(())
-				})
+				future::select(
+					Delay::new(Duration::from_secs(20)),
+					finalized.for_each(|(_h, n)| {
+						assert!(n < 4, "block_number should less than 4.");
+						futures::future::ready(())
+					}),
+				)
 			})
 			.collect::<Vec<_>>();
 
@@ -1358,7 +1351,7 @@ mod tests {
 
 	#[test]
 	fn skips_to_latest_view_after_catch_up() {
-		// simple_logger::init_with_level(log::Level::Trace).unwrap();
+		simple_logger::init_with_level(log::Level::Trace).unwrap();
 
 		let voters_num = 5;
 		let voter_set = VoterSet::new((0..voters_num).into_iter().collect()).unwrap();
@@ -1369,7 +1362,7 @@ mod tests {
 		pool.spawner().spawn(routing_network).unwrap();
 
 		let (env, mut unsynced_voter) = {
-			let local_id = 5;
+			let local_id = 3;
 
 			let env = Arc::new(DummyEnvironment::new(network.clone(), local_id));
 			let last_finalized = env.with_chain(|chain| {
@@ -1441,7 +1434,7 @@ mod tests {
 			(
 				3,
 				crate::leader::voter::report::ViewState::<Hash, Id> {
-					state: crate::leader::CurrentState::PrePrepare,
+					state: crate::leader::CurrentState::Prepare,
 					total_voters: 5,
 					threshold: 4,
 					preprepare_hash: Some("D"),
