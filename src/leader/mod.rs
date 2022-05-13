@@ -546,6 +546,7 @@ where
 		}
 
 		if self.seq == message.seq() && self.target().map_or(false, |t| t != message.target()) {
+			#[cfg(feature = "std")]
 			log::warn!(target:"afp", "find a different target with same seq. our: {:?}, theirs: {:?}", self.target(), message.target());
 			return
 		}
