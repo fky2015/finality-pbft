@@ -282,6 +282,11 @@ impl<N: Copy, D, S, Id> SignedMessage<N, D, S, Id> {
 	}
 }
 
+impl<N: Copy, D, S, Id> From<SignedCommit<N, D, S, Id>> for SignedMessage<N, D, S, Id> {
+	fn from(sc: SignedCommit<N, D, S, Id>) -> Self {
+		SignedMessage { message: Message::Commit(sc.commit), signature: sc.signature, id: sc.id }
+	}
+}
 /// Authentication data for a set of many messages, currently a set of precommit signatures but
 /// in the future could be optimized with BLS signature aggregation.
 pub type MultiAuthData<S, Id> = Vec<(S, Id)>;
