@@ -421,13 +421,12 @@ pub(crate) struct Storage<N, D, S, Id: Eq + Ord> {
 pub struct State<N, H> {
 	/// The last finalized block.
 	pub finalized: Option<(N, H)>,
-	pub completable: bool,
 }
 
 impl<H: Clone, N: Clone> State<H, N> {
 	/// Genesis state.
 	pub fn genesis(genesis: (H, N)) -> Self {
-		State { finalized: Some(genesis.clone()), completable: true }
+		State { finalized: Some(genesis.clone()) }
 	}
 }
 

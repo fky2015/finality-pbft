@@ -672,7 +672,7 @@ use self::communicate::RoundData;
 
 use super::{
 	CatchUp, CommitValidationResult, CompactCommit, CurrentState, Error, FinalizedCommit, Message,
-	SignedCommit, SignedMessage, Storage, VoterSet,
+	SignedCommit, SignedMessage, State, Storage, VoterSet,
 };
 
 /// Necessary environment for a voter.
@@ -715,6 +715,15 @@ pub trait Environment {
 
 	/// preprepare
 	fn preprepare(&self, view: u64, block: Self::Hash) -> Self::BestChain;
+
+	/// Similar to `completed`
+	fn complete_f_commit(
+		&self,
+		view: u64,
+		state: State<Self::Number, Self::Hash>,
+		base: (Self::Number, Self::Hash),
+		f_commit: FinalizedCommit<Self::Number, Self::Hash, Self::Signature, Self::Id>,
+	) -> Result<(), Self::Error>;
 
 	/// Finalize a block.
 	// TODO: maybe async?
@@ -996,7 +1005,21 @@ where
 			// TODO: maybe further check the commit is the same?
 			if self.message_log.lock().last_round_base.0.clone() != height {
 				log::trace!(target: "afp", "{:?} in view {} finalized a new commit", self.id, self.view);
-				let _ = self.env.finalize_block(self.view, hash.to_owned(), height, f_commit);
+				let _ = self.env.finalize_block(
+					self.view,
+					hash.to_owned(),
+					height.to_owned(),
+					f_commit.to_owned(),
+				);
+
+				// After finalize block, we report the progress we've made.
+				let last_round_base = self.message_log.lock().last_round_base.to_owned();
+				let _ = self.env.complete_f_commit(
+					self.view,
+					State { finalized: Some((height.to_owned(), hash.to_owned())) },
+					last_round_base,
+					f_commit,
+				);
 			} else {
 				log::trace!(target: "afp", "skip already finalized block");
 			}

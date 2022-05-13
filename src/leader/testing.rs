@@ -562,6 +562,16 @@ pub mod environment {
 				chain.next_to_be_finalized().unwrap_or_else(|_| chain.last_finalized())
 			}))))
 		}
+
+		fn complete_f_commit(
+			&self,
+			_view: u64,
+			_state: crate::leader::State<Self::Number, Self::Hash>,
+			_base: (Self::Number, Self::Hash),
+			_f_commit: FinalizedCommit<Self::Number, Self::Hash, Self::Signature, Self::Id>,
+		) -> Result<(), Self::Error> {
+            Ok(())
+		}
 	}
 }
 
