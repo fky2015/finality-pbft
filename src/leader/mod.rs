@@ -417,6 +417,19 @@ pub(crate) struct Storage<N, D, S, Id: Eq + Ord> {
 	preprepare: BTreeMap<Id, (PrePrepare<N, D>, S)>,
 	prepare: BTreeMap<Id, (Prepare<N, D>, S)>,
 	commit: BTreeMap<Id, (Commit<N, D>, S)>,
+	// When voter run into prepare stage (and the following stage)
+	// `current_state` and seq should not be lift.
+	//
+	// Or we will enter commit stage with No other commit.
+	// node: seq = 18, stage = COMMIT
+	// <---- received --- PrePrepare(seq = 19) from other nodes.
+	// node: seq = 19, stage = COMMIT
+	//
+	// This will happen when a node catch up with others.
+	//
+	// So we should block.
+	block_catch_up: bool,
+	pending_msg: Vec<(Id, Message<N, D>, S)>,
 }
 
 /// State of the view. Generate by [`Storage`].
@@ -452,6 +465,8 @@ where
 			preprepare: Default::default(),
 			prepare: Default::default(),
 			commit: Default::default(),
+			block_catch_up: false,
+			pending_msg: Vec::new(),
 		}
 	}
 
@@ -482,10 +497,11 @@ where
 		self.clear_votes();
 		self.target = None;
 		self.current_state = CurrentState::PrePrepare;
+		self.block_catch_up = false;
 	}
 
-	fn gen_prepare(&self, view: u64) {
-		// TODO:
+	fn block_catch_up(&mut self) {
+		self.block_catch_up = true;
 	}
 
 	/// Should be called only if current_state == Finalize
@@ -537,6 +553,18 @@ where
 	/// 2. Or if its seq number larger than ours, then we move to next seq.
 	///   - clean current state and logs
 	/// 3. Discard others.
+	fn save_message_with_block(&mut self, from: Id, message: Message<N, H>, signature: S) {
+		if self.block_catch_up && message.seq() > self.seq() {
+			self.pending_msg.push((from, message, signature));
+			return
+		} else {
+			while let Some((from, msg, sig)) = self.pending_msg.pop() {
+				self.save_message(from, msg, sig);
+			}
+			self.save_message(from, message, signature)
+		}
+	}
+
 	fn save_message(&mut self, from: Id, message: Message<N, H>, signature: S) {
 		if message.seq() < self.seq() {
 			return

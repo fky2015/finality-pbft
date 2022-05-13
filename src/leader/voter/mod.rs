@@ -828,7 +828,7 @@ where
 
 			log::trace!(target: "afp", "process_incoming: {:?}", msg);
 			let SignedMessage { message, signature, id } = msg;
-			log.lock().save_message(id, message, signature);
+			log.lock().save_message_with_block(id, message, signature);
 		}
 
 		log::trace!(target: "afp", "end of process_incoming");
@@ -982,6 +982,8 @@ where
 			unreachable!();
 		}
 
+        // Stop received messages with the higher seq number.
+        self.message_log.lock().block_catch_up();
 		let (height, hash) = self
 			.message_log
 			.lock()
