@@ -91,9 +91,9 @@ pub mod view_round {
 		pub completable: bool,
 	}
 
-	impl<H: Clone, N: Clone> State<H, N> {
+	impl<H: Clone, N: Clone> State<N, H> {
 		/// Genesis state.
-		pub fn genesis(genesis: (H, N)) -> Self {
+		pub fn genesis(genesis: (N, H)) -> Self {
 			State { finalized: Some(genesis.clone()), completable: true }
 		}
 	}
