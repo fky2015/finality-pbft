@@ -1216,7 +1216,7 @@ mod tests {
 
 	#[test]
 	fn view_did_not_change_when_primary_alive_without_new_preprepare() {
-		simple_logger::init_with_level(log::Level::Trace).unwrap();
+		// simple_logger::init_with_level(log::Level::Trace).unwrap();
 		let voters_num = 4;
 		let online_voters_num = 4;
 		let voter_set = VoterSet::new((0..voters_num).into_iter().collect()).unwrap();
@@ -1351,7 +1351,7 @@ mod tests {
 
 	#[test]
 	fn skips_to_latest_view_after_catch_up() {
-		simple_logger::init_with_level(log::Level::Trace).unwrap();
+		// simple_logger::init_with_level(log::Level::Trace).unwrap();
 
 		let voters_num = 5;
 		let voter_set = VoterSet::new((0..voters_num).into_iter().collect()).unwrap();
