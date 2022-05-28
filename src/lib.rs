@@ -34,7 +34,6 @@ extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
 
-pub mod pbft;
 pub mod round;
 pub mod vote_graph;
 #[cfg(feature = "std")]
@@ -192,7 +191,7 @@ pub trait Chain<H: Eq, N: Copy + BlockNumberOps> {
 	/// Returns true if `block` is a descendent of or equal to the given `base`.
 	fn is_equal_or_descendent_of(&self, base: H, block: H) -> bool {
 		if base == block {
-			return true;
+			return true
 		}
 
 		// TODO: currently this function always succeeds since the only error
@@ -453,15 +452,15 @@ where
 	// check that all precommits are for blocks higher than the target
 	// commit block, and that they're its descendents
 	let all_precommits_higher_than_target = commit.precommits.iter().all(|signed| {
-		signed.precommit.target_number >= commit.target_number
-			&& chain.is_equal_or_descendent_of(
+		signed.precommit.target_number >= commit.target_number &&
+			chain.is_equal_or_descendent_of(
 				commit.target_hash.clone(),
 				signed.precommit.target_hash.clone(),
 			)
 	});
 
 	if !all_precommits_higher_than_target {
-		return Ok(validation_result);
+		return Ok(validation_result)
 	}
 
 	let mut equivocated = std::collections::BTreeSet::new();
@@ -480,9 +479,9 @@ where
 				validation_result.num_equivocations += 1;
 				// allow only one equivocation per voter, as extras are redundant.
 				if !equivocated.insert(id) {
-					return Ok(validation_result);
+					return Ok(validation_result)
 				}
-			}
+			},
 			ImportResult { duplicated, valid_voter, .. } => {
 				if duplicated {
 					validation_result.num_duplicated_precommits += 1;
@@ -490,7 +489,7 @@ where
 				if !valid_voter {
 					validation_result.num_invalid_voters += 1;
 				}
-			}
+			},
 		}
 	}
 

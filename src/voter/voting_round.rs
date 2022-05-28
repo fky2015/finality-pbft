@@ -171,8 +171,6 @@ where
 	pub(super) fn poll(&mut self, cx: &mut Context) -> Poll<Result<(), E::Error>> {
 		trace!(target: "afg", "Polling round {}, state = {:?}, step = {:?}", self.votes.number(), self.votes.state(), self.state);
 
-		trace!(target: "afg", "VoterSet {:?}", self.voters());
-
 		let pre_state = self.votes.state();
 		self.process_incoming(cx)?;
 
@@ -195,7 +193,7 @@ where
 
 		// early exit if the current round is not completable
 		if !self.votes.completable() {
-			return Poll::Pending;
+			return Poll::Pending
 		}
 
 		// make sure that the previous round estimate has been finalized
@@ -215,13 +213,13 @@ where
 					});
 
 				finalized_in_last_round || finalized_in_current_round
-			}
+			},
 			None => {
 				// NOTE: when we catch up to a round we complete the round
 				// without any last round state. in this case we already started
 				// a new round after we caught up so this guard is unneeded.
 				true
-			}
+			},
 			_ => false,
 		};
 
@@ -229,7 +227,7 @@ where
 		if !last_round_estimate_finalized {
 			trace!(target: "afg", "Round {} completable but estimate not finalized.", self.round_number());
 			self.log_participation(log::Level::Trace);
-			return Poll::Pending;
+			return Poll::Pending
 		}
 
 		debug!(target: "afg", "Completed round {}, state = {:?}, step = {:?}",
@@ -304,7 +302,7 @@ where
 	) -> Result<Option<(H, N)>, E::Error> {
 		let base = validate_commit(commit, self.voters(), &*self.env)?.ghost;
 		if base.is_none() {
-			return Ok(None);
+			return Ok(None)
 		}
 
 		for SignedPrecommit { precommit, signature, id } in commit.precommits.iter().cloned() {
@@ -363,7 +361,7 @@ where
 				message.target(),
 				self.votes.base(),
 			);
-			return Ok(());
+			return Ok(())
 		}
 
 		match message {
@@ -373,14 +371,14 @@ where
 				if let ImportResult { equivocation: Some(e), .. } = import_result {
 					self.env.prevote_equivocation(self.votes.number(), e);
 				}
-			}
+			},
 			Message::Precommit(precommit) => {
 				let import_result =
 					self.votes.import_precommit(&*self.env, precommit, id, signature)?;
 				if let ImportResult { equivocation: Some(e), .. } = import_result {
 					self.env.precommit_equivocation(self.votes.number(), e);
 				}
-			}
+			},
 			Message::PrimaryPropose(primary) => {
 				let primary_id = self.votes.primary_voter().0.clone();
 				// note that id here refers to the party which has cast the vote
@@ -388,7 +386,7 @@ where
 				if id == primary_id {
 					self.primary_block = Some((primary.target_hash, primary.target_number));
 				}
-			}
+			},
 		}
 
 		Ok(())
@@ -442,24 +440,24 @@ where
 							self.outgoing.push(Message::PrimaryPropose(primary));
 							self.state = Some(State::Proposed(prevote_timer, precommit_timer));
 
-							return Ok(());
+							return Ok(())
 						} else {
 							debug!(target: "afg", "Last round estimate has been finalized, \
 								not sending primary block hint for round {}", self.votes.number());
 						}
-					}
+					},
 					(None, true) => {
 						debug!(target: "afg", "Last round estimate does not exist, \
 							not sending primary block hint for round {}", self.votes.number());
-					}
-					_ => {}
+					},
+					_ => {},
 				}
 
 				self.state = Some(State::Start(prevote_timer, precommit_timer));
-			}
+			},
 			x => {
 				self.state = x;
-			}
+			},
 		}
 
 		Ok(())
@@ -518,8 +516,8 @@ where
 				Poll::Ready(Ok(best_chain)) => best_chain,
 				Poll::Pending => {
 					this.state = Some(State::Prevoting(precommit_timer, (base, best_chain)));
-					return Ok(());
-				}
+					return Ok(())
+				},
 			};
 
 			if let Some(target) = best_chain {
@@ -549,16 +547,16 @@ where
 		match state {
 			Some(State::Start(prevote_timer, precommit_timer)) => {
 				start_prevoting(self, prevote_timer, precommit_timer, false, cx)?;
-			}
+			},
 			Some(State::Proposed(prevote_timer, precommit_timer)) => {
 				start_prevoting(self, prevote_timer, precommit_timer, true, cx)?;
-			}
+			},
 			Some(State::Prevoting(precommit_timer, (base, best_chain))) => {
 				finish_prevoting(self, precommit_timer, base, best_chain, cx)?;
-			}
+			},
 			x => {
 				self.state = x;
-			}
+			},
 		}
 
 		Ok(())
@@ -580,9 +578,8 @@ where
 					// we wait for the last round's estimate to be equal to or
 					// the ancestor of the current round's p-Ghost before precommitting.
 					self.votes.state().prevote_ghost.as_ref().map_or(false, |p_g| {
-						p_g == &last_round_estimate
-							|| self
-								.env
+						p_g == &last_round_estimate ||
+							self.env
 								.is_equal_or_descendent_of(last_round_estimate.0, p_g.0.clone())
 					})
 				} && match precommit_timer.poll_unpin(cx) {
@@ -603,10 +600,10 @@ where
 				} else {
 					self.state = Some(State::Prevoted(precommit_timer));
 				}
-			}
+			},
 			x => {
 				self.state = x;
-			}
+			},
 		}
 
 		Ok(())
@@ -623,7 +620,7 @@ where
 			None => {
 				// vote for best chain containing prior round-estimate.
 				last_round_estimate.0
-			}
+			},
 			Some(ref primary_block) => {
 				// we will vote for the best chain containing `p_hash` iff
 				// the last round's prevote-GHOST included that block and
@@ -661,7 +658,7 @@ where
 							} else {
 								last_round_estimate.0
 							}
-						}
+						},
 						Err(crate::Error::NotDescendent) => {
 							// This is only possible in case of massive equivocation
 							warn!(target: "afg",
@@ -672,10 +669,10 @@ where
 							);
 
 							last_round_estimate.0
-						}
+						},
 					}
 				}
-			}
+			},
 		};
 
 		(find_descendent_of.clone(), self.env.best_chain_containing(find_descendent_of))

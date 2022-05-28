@@ -44,10 +44,7 @@ use std::{
 };
 
 use crate::{
-	round::State as RoundState,
-	validate_commit,
-	voter_set::{ViewChange, VoterSet},
-	weights::VoteWeight,
+	round::State as RoundState, validate_commit, voter_set::VoterSet, weights::VoteWeight,
 	BlockNumberOps, CatchUp, Chain, Commit, CommitValidationResult, CompactCommit, Equivocation,
 	HistoricalVotes, Message, Precommit, Prevote, PrimaryPropose, SignedMessage,
 };
@@ -119,10 +116,6 @@ pub trait Environment<H: Eq, N: BlockNumberOps>: Chain<H, N> {
 
 	/// Note that we have precommitted in the given round.
 	fn precommitted(&self, round: u64, precommit: Precommit<H, N>) -> Result<(), Self::Error>;
-
-	/// Note that we have view change in the given round.
-	/// Current view change is equal to `round_number`.
-	fn view_change(&self, round: u64, view_change: ViewChange<u64>) -> Result<(), Self::Error>;
 
 	/// Note that a round is completed. This is called when a round has been
 	/// voted in and the next round can start. The round may continue to be run
@@ -330,7 +323,7 @@ impl<O> Callback<O> {
 	/// Do the work associated with the callback, if any.
 	pub fn run(&mut self, o: O) {
 		match self {
-			Callback::Blank => {}
+			Callback::Blank => {},
 			Callback::Work(cb) => cb(o),
 		}
 	}
@@ -387,7 +380,7 @@ impl<S: Sink<I> + Unpin, I> Buffered<S, I> {
 			Poll::Pending => {
 				ready!(Sink::poll_flush(Pin::new(&mut self.inner), cx))?;
 				Poll::Pending
-			}
+			},
 		}
 	}
 
@@ -588,15 +581,9 @@ where
 			env.clone(),
 		);
 
-		let round_number = last_round_number + 1;
-
 		let (global_in, global_out) = global_comms;
 
 		let inner = Arc::new(Mutex::new(InnerVoterState { best_round, past_rounds }));
-
-		// NOTE: emit current round_number;
-		env.view_change(round_number, ViewChange::from(round_number))
-			.expect("[view_change] new round failed to notify.");
 
 		Voter {
 			env,
@@ -707,7 +694,7 @@ where
 						process_commit_outcome
 							.run(CommitProcessingOutcome::Good(GoodCommit::new()));
 					}
-				}
+				},
 				CommunicationIn::CatchUp(catch_up, mut process_catch_up_outcome) => {
 					trace!(target: "afg", "Got catch-up message for round {}", catch_up.round_number);
 
@@ -723,7 +710,7 @@ where
 					} else {
 						process_catch_up_outcome
 							.run(CatchUpProcessingOutcome::Bad(BadCatchUp::new()));
-						return Ok(());
+						return Ok(())
 					};
 
 					let state = round.state();
@@ -761,22 +748,14 @@ where
 						just_completed.historical_votes(),
 					)?;
 
-					let round_number = just_completed.round_number() + 1;
-
 					inner.past_rounds.push(&*self.env, just_completed);
 
 					let old_best = std::mem::replace(&mut inner.best_round, new_best);
-
-					// NOTE: emit new round_number.
-					self.env
-						.view_change(round_number, ViewChange::from(round_number))
-						.expect("[view_change] new round failed to notify.");
-
 					inner.past_rounds.push(&*self.env, old_best);
 
 					process_catch_up_outcome
 						.run(CatchUpProcessingOutcome::Good(GoodCatchUp::new()));
-				}
+				},
 			}
 		}
 
@@ -804,7 +783,7 @@ where
 			};
 
 			if !should_start_next {
-				return Poll::Pending;
+				return Poll::Pending
 			}
 
 			trace!(target: "afg", "Best round at {} has become completable. Starting new best round at {}",
@@ -849,7 +828,7 @@ where
 		let last_finalized_number = &mut self.last_finalized_number;
 		if finalized_number > *last_finalized_number {
 			*last_finalized_number = finalized_number;
-			return true;
+			return true
 		}
 		false
 	}
@@ -983,7 +962,7 @@ where
 		trace!(target: "afg", "Ignoring because best round number is {}",
 			   best_round_number);
 
-		return None;
+		return None
 	}
 
 	// check threshold support in prevotes and precommits.
@@ -997,7 +976,7 @@ where
 					   prevote.id,
 				);
 
-				return None;
+				return None
 			}
 
 			map.entry(prevote.id.clone()).or_insert((false, false)).0 = true;
@@ -1010,7 +989,7 @@ where
 					   precommit.id,
 				);
 
-				return None;
+				return None
 			}
 
 			map.entry(precommit.id.clone()).or_insert((false, false)).1 = true;
@@ -1039,7 +1018,7 @@ where
 				   "Ignoring invalid catch up, missing voter threshold"
 			);
 
-			return None;
+			return None
 		}
 	}
 
@@ -1052,36 +1031,36 @@ where
 	// import prevotes first.
 	for crate::SignedPrevote { prevote, id, signature } in catch_up.prevotes {
 		match round.import_prevote(env, prevote, id, signature) {
-			Ok(_) => {}
+			Ok(_) => {},
 			Err(e) => {
 				trace!(target: "afg",
 					   "Ignoring invalid catch up, error importing prevote: {:?}",
 					   e,
 				);
 
-				return None;
-			}
+				return None
+			},
 		}
 	}
 
 	// then precommits.
 	for crate::SignedPrecommit { precommit, id, signature } in catch_up.precommits {
 		match round.import_precommit(env, precommit, id, signature) {
-			Ok(_) => {}
+			Ok(_) => {},
 			Err(e) => {
 				trace!(target: "afg",
 					   "Ignoring invalid catch up, error importing precommit: {:?}",
 					   e,
 				);
 
-				return None;
-			}
+				return None
+			},
 		}
 	}
 
 	let state = round.state();
 	if !state.completable {
-		return None;
+		return None
 	}
 
 	Some(round)
@@ -1399,7 +1378,7 @@ mod tests {
 		match res {
 			future::Either::Right(((), _work)) => {
 				// the future timed out as expected
-			}
+			},
 			_ => panic!("Unexpected result"),
 		}
 	}
