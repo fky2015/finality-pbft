@@ -44,7 +44,7 @@ pub mod chain {
 
 		pub fn push_blocks(&mut self, mut parent: &'static str, blocks: &[&'static str]) {
 			if blocks.is_empty() {
-				return
+				return;
 			}
 
 			let base_number = self.inner.get(parent).unwrap().number + 1;
@@ -92,15 +92,15 @@ pub mod chain {
 				// leaves are in descending order.
 				let leaf_number = self.inner.get(leaf).unwrap().number;
 				if leaf_number < base_number {
-					break
+					break;
 				}
 
 				if leaf == &base {
-					return Some((leaf, leaf_number))
+					return Some((leaf, leaf_number));
 				}
 
 				if let Ok(_) = self.ancestry(base, leaf) {
-					return Some((leaf, leaf_number))
+					return Some((leaf, leaf_number));
 				}
 			}
 
@@ -125,10 +125,10 @@ pub mod chain {
 				}
 
 				if block == NULL_HASH {
-					return Err(Error::NotDescendent)
+					return Err(Error::NotDescendent);
 				}
 				if block == base {
-					break
+					break;
 				}
 
 				ancestry.push(block);
@@ -361,7 +361,7 @@ pub mod environment {
 		history: Vec<M>,
 	}
 
-	impl<M: Clone> BroadcastNetwork<M> {
+	impl<M: Clone + std::fmt::Debug> BroadcastNetwork<M> {
 		fn new() -> Self {
 			let (tx, rx) = mpsc::unbounded();
 			BroadcastNetwork {
@@ -395,6 +395,7 @@ pub mod environment {
 
 			self.senders.push(tx);
 
+			// rx, raw_sender
 			(rx.map(Ok), messages_out)
 		}
 
@@ -405,6 +406,7 @@ pub mod environment {
 					Poll::Pending => return Poll::Pending,
 					Poll::Ready(None) => return Poll::Ready(()),
 					Poll::Ready(Some(item)) => {
+						println!("msg: {:?}", item);
 						self.history.push(item.clone());
 						for sender in &self.senders {
 							let _ = sender.unbounded_send(item.clone());
@@ -465,8 +467,9 @@ pub mod environment {
 		) {
 			let mut global_messages = self.global_messages.lock();
 			global_messages.add_node(|message| match message {
-				CommunicationOut::Commit(r, commit) =>
-					CommunicationIn::Commit(r, commit.into(), Callback::Blank),
+				CommunicationOut::Commit(r, commit) => {
+					CommunicationIn::Commit(r, commit.into(), Callback::Blank)
+				},
 			})
 		}
 
@@ -487,9 +490,18 @@ pub mod environment {
 
 		fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<()> {
 			let mut rounds = self.rounds.lock();
-			rounds.retain(|_, round| match round.route(cx) {
-				Poll::Ready(()) => false,
-				Poll::Pending => true,
+			rounds.retain(|r, round| {
+				println!("round: {}", r);
+				match round.route(cx) {
+					Poll::Ready(()) => {
+						log::trace!(
+							"round: {r}, round_network.route: finished with history: {}",
+							round.history.len()
+						);
+						false
+					},
+					Poll::Pending => true,
+				}
 			});
 
 			let mut global_messages = self.global_messages.lock();

@@ -34,6 +34,7 @@ extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
 
+pub mod leader;
 pub mod round;
 pub mod vote_graph;
 #[cfg(feature = "std")]
