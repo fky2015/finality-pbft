@@ -21,6 +21,11 @@ And there are other distincitions between pBFT and finality-pbft:
 - view changing.
 - catch up strategy.
 
+Something I did not implement and need improve:
+
+- voter_set change.
+- a empty global message exists as a workaround of testing network's defective `Future`.
+
 This codebase takes a lot of inspiration from [finality-grandpa][substrate-finality-grandpa], and more thorough implementation considerations are discussed below.
 
 ## Build & Test

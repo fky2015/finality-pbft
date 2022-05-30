@@ -1,7 +1,5 @@
 use std::{sync::Arc, task::Poll, time::Duration};
 
-// TODO: Deal with the voter_set (as well as voter_id) change between blocks.
-
 /// Callback used to pass information about the outcome of importing a given
 /// message (e.g. vote, commit, catch up). Useful to propagate data to the
 /// network after making sure the import is successful.
@@ -166,7 +164,7 @@ pub enum GlobalMessageIn<D, N, S, Id> {
 	/// multicast <view + 1, latest stable checkpoint, C: a set of pairs with the sequence number
 	/// and digest of each checkpoint, P, Q, i>
 	ViewChange(ViewChange<Id>),
-
+	/// A workaround for test network.
 	Empty,
 }
 
@@ -210,7 +208,7 @@ type FinalizedNotification<E> = (
 	>,
 );
 
-/// Storage ViewChange message.
+/// Storage ViewChange message and validate.
 #[derive(Debug)]
 pub(crate) struct PeerViewChange<Id, N, H, S> {
 	// <ID, BEST_VIEW_CHANGE>
@@ -235,6 +233,7 @@ impl<Id: Eq + std::hash::Hash + Clone, N: Clone, H: Clone, S: Clone> PeerViewCha
 		}
 	}
 
+	/// Count the number of peers in the tergeting view.
 	pub fn count_view_change(&self, target_view: u64) -> usize {
 		self.inner.iter().filter(|(_, &v)| v == target_view).count()
 	}
@@ -243,15 +242,16 @@ impl<Id: Eq + std::hash::Hash + Clone, N: Clone, H: Clone, S: Clone> PeerViewCha
 		self.inner.clear();
 	}
 
+	/// Return if a peer is in specific view.
 	pub fn exist(&self, id: &Id, view: u64) -> bool {
 		self.inner.get(id).map(|&v| v == view).unwrap_or(false)
 	}
 
+	/// Return if higher view exist.
 	pub fn exist_higher(&self, id: &Id, view: u64) -> bool {
 		self.inner.get(id).map(|&v| v <= view).unwrap_or(false)
 	}
 
-	/// TODO: docs
 	/// Return hightest valid view number.
 	pub fn exist_valid_view(
 		&self,
@@ -277,21 +277,29 @@ impl<Id: Eq + std::hash::Hash + Clone, N: Clone, H: Clone, S: Clone> PeerViewCha
 	}
 }
 
+/// A voter can cast message in both global and rounds (views).
+/// Implment pBFT.
 pub struct Voter<E: Environment, GlobalIn, GlobalOut> {
+	/// Local Id.
 	local_id: E::Id,
+	/// Environment.
 	env: Arc<E>,
+	/// Current Voter Set.
 	voters: VoterSet<E::Id>,
+	/// Inner voter state (for view).
 	inner: Arc<Mutex<InnerVoterState<E>>>,
-	// finalized_notifications: UnboundedReceiver<FinalizedNotification<E>>,
+	/// Global message in.
 	global_incoming: Option<GlobalIn>,
+	/// Global message out.
 	global_outgoing: GlobalOut,
+	/// Last block finalized.
 	last_finalized_target: (E::Number, E::Hash),
+	/// Current view.
 	current_view_number: u64,
-	// <ID, BEST_VIEW_CHANGE>
+	/// Storing Peers view when starting a view change.
 	peer_view: Arc<Mutex<PeerViewChange<E::Id, E::Number, E::Hash, E::Signature>>>,
 }
 
-// QUESTION: why 'a
 impl<'a, E: 'a, GlobalIn, GlobalOut> Voter<E, GlobalIn, GlobalOut>
 where
 	E: Environment + Sync + Send,
@@ -354,6 +362,7 @@ where
 		}
 	}
 
+	/// Init a new view.
 	pub fn new_view_round(&self) -> ViewRound<E> {
 		let voter_set = self.voters.clone();
 		ViewRound::new(
@@ -364,6 +373,7 @@ where
 		)
 	}
 
+	/// Process a round in current view. PBFT Implmentation.
 	pub async fn process_voting_round(
 		view_round: &mut ViewRound<E>,
 	) -> Result<(E::Number, E::Hash), E::Error> {
@@ -390,12 +400,13 @@ where
 			}
 		};
 
-		// Move back.
+		// Move the ownership back.
 		view_round.incoming = Some(inner_incoming);
 
 		res
 	}
 
+	/// Change view. PBFT implementation.
 	pub async fn change_view(&mut self) -> Result<u64, E::Error> {
 		const DELAY_VIEW_CHANGE_WAIT: u64 = 500;
 		let new_view = self.current_view_number + 1;
@@ -437,6 +448,7 @@ where
 		}
 	}
 
+	/// This is a entrance of the consensus.
 	pub async fn run(&mut self) {
 		log::trace!(target: "afp", "{:?} Voter::run", self.local_id);
 
@@ -455,6 +467,7 @@ where
 		log::warn!(target: "afp", "voter stopped.");
 	}
 
+	/// Run voter.
 	pub(crate) async fn run_voter(&mut self) {
 		let mut best_view = self.inner.lock().best_view.take_clone();
 
@@ -489,6 +502,7 @@ where
 		}
 	}
 
+	/// Process global incoming message.
 	pub(crate) async fn process_global_incoming(
 		mut global_incoming: GlobalIn,
 		peer_view_change: Arc<Mutex<PeerViewChange<E::Id, E::Number, E::Hash, E::Signature>>>,
@@ -534,9 +548,8 @@ where
 			log::trace!(target: "afp", "received a global_incoming msg");
 		}
 	}
-
-	// pub async fn process_current_consensus(&self) {}
 }
+
 /// Trait for querying the state of the voter. Used by `Voter` to return a queryable object
 /// without exposing too many data types.
 pub trait VoterState<Hash, Id: Eq + std::hash::Hash> {
@@ -601,13 +614,11 @@ pub mod report {
 	}
 }
 
-// The inner state of a voter aggregating the currently running round state
-// (i.e. best and background rounds). This state exists separately since it's
-// useful to wrap in a `Arc<Mutex<_>>` for sharing.
+/// The inner state of a voter aggregating the currently running round state
+/// (i.e. best and background rounds). This state exists separately since it's
+/// useful to wrap in a `Arc<Mutex<_>>` for sharing.
 pub struct InnerVoterState<E>
 where
-	// H: Clone + Ord + std::fmt::Debug,
-	// N: BlockNumberOps,
 	E: Environment,
 {
 	best_view: ViewRound<E>,
@@ -616,16 +627,11 @@ where
 
 struct SharedVoterState<E>(Arc<Mutex<InnerVoterState<E>>>)
 where
-	// H: Clone + Ord + std::fmt::Debug,
-	// N: BlockNumberOps,
 	E: Environment;
 
 impl<E> VoterState<E::Hash, E::Id> for SharedVoterState<E>
 where
-	// H: Clone + Eq + Ord + std::fmt::Debug,
-	// N: BlockNumberOps,
 	E: Environment,
-	// <E as Environment>::Id: Hash,
 {
 	fn get(&self) -> report::VoterState<E::Hash, E::Id> {
 		let to_view_state = |view_round: &ViewRound<E>| {
@@ -654,9 +660,6 @@ where
 	}
 }
 
-/// Environment for consensus.
-///
-/// Including network, storage and other info (that cannot get directly via consensus algo).
 use std::collections::HashMap;
 
 use futures::{Future, FutureExt, Sink, SinkExt, Stream, TryStreamExt};
@@ -757,19 +760,22 @@ where
 pub struct ViewRound<E: Environment> {
 	env: Arc<E>,
 	voter_set: VoterSet<E::Id>,
+	/// Storage state for the voter.
 	message_log: Arc<Mutex<Storage<E::Number, E::Hash, E::Signature, E::Id>>>,
+	/// PBFT view number.
 	view: u64,
+	/// The id of the voter.
 	id: E::Id,
+	/// Receiver for incoming messages.
 	incoming: Option<E::In>,
+	/// Sender for outgoing messages.
 	outgoing: Option<E::Out>,
-	// finalized_sender: UnboundedSender<FinalizedNotification<E>>,
 }
 
 impl<E> ViewRound<E>
 where
 	E: Environment,
 {
-	// TODO: maybe delete some fields?
 	pub fn new(
 		view: u64,
 		last_round_base: (E::Number, E::Hash),
@@ -790,6 +796,7 @@ where
 		}
 	}
 
+	/// Clone this `ViewRound`, but take the ownership of the `incoming` and `outgoing`.
 	fn take_clone(&mut self) -> Self {
 		ViewRound {
 			env: self.env.clone(),
@@ -802,19 +809,13 @@ where
 		}
 	}
 
+	/// Update the PBFT state.
 	fn change_state(&self, state: CurrentState) {
 		// TODO: trace push log?
 		self.message_log.lock().current_state = state;
 	}
 
-	// TODO: Update state in a new round, but with same info.
-	//
-	// The arguments passed here are those which might be updated between round change (block
-	// change).
-	// fn update_round(&mut self, voter_set: VoterSet<E::Id>) {
-	// 	self.voter_set = voter_set;
-	// }
-
+	/// Process incoming messages in a round in the view.
 	async fn process_incoming(
 		incoming: &mut E::In,
 		log: Arc<Mutex<Storage<E::Number, E::Hash, E::Signature, E::Id>>>,
@@ -835,10 +836,12 @@ where
 		Ok(())
 	}
 
+	/// If this voter is the leader in this view.
 	fn is_primary(&self) -> bool {
 		self.voter_set.get_primary(self.view) == self.id
 	}
 
+	/// PBFT PREPREPARE stage.
 	async fn preprepare(&mut self) -> Result<(), E::Error> {
 		// This should longer than view_change duration.
 		const DELAY_BEFORE_PRE_PREPARE_MILLI: u64 = 1000;
@@ -883,7 +886,7 @@ where
 		Ok(())
 	}
 
-	/// Enter prepare phase
+	/// PBFT PREPARE stage.
 	///
 	/// Called at end of pre-prepare or beginning of prepare.
 	async fn prepare(&mut self) -> Result<(), E::Error> {
@@ -917,7 +920,7 @@ where
 		Ok(())
 	}
 
-	/// Enter Commit phase
+	/// PBFT COMMIT stage.
 	async fn commit(&mut self) -> Result<(), E::Error> {
 		log::trace!(target: "afp", "COMMIT start commit");
 		const DELAY_COMMIT_MILLI: u64 = 1000;
@@ -951,6 +954,7 @@ where
 		Ok(())
 	}
 
+	/// Multicast a message to all peers.
 	async fn multicast(&mut self, msg: Message<E::Number, E::Hash>) -> Result<(), E::Error> {
 		log::trace!(target: "afp", "{:?} multicast message: {:?}", self.id, msg);
 		let result = self.outgoing.as_mut().unwrap().send(msg).await;
@@ -960,6 +964,7 @@ where
 		result
 	}
 
+	/// Has the primary (leader) sent a message in this round.
 	fn primary_alive(&self) -> Result<(), E::Error> {
 		let primary = self.voter_set.get_primary(self.view);
 		log::trace!(target: "afp", "{:?}, primary_alive: view: {}, primary: {:?}", self.id, self.view, primary);
@@ -971,6 +976,7 @@ where
 			.ok_or(Error::PrimaryFailure.into())
 	}
 
+	/// Voting in a round in PBFT.
 	async fn progress(&mut self) -> Result<(E::Number, E::Hash), E::Error> {
 		log::trace!(target: "afp", "{:?} ViewRound::progress, view: {}", self.id, self.view);
 
@@ -982,8 +988,8 @@ where
 			unreachable!();
 		}
 
-        // Stop received messages with the higher seq number.
-        self.message_log.lock().block_catch_up();
+		// Stop received messages with the higher seq number.
+		self.message_log.lock().block_catch_up();
 		let (height, hash) = self
 			.message_log
 			.lock()
@@ -1482,7 +1488,7 @@ mod tests {
 		// );
 	}
 
-	// TODO: if this necessary?
+	// TODO: This cannot be tested via unit test.
 	fn fail_then_recover() {
 		let max_view = Arc::new(Mutex::new(0));
 		let max_view_clone = max_view.clone();

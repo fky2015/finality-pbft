@@ -44,11 +44,13 @@ use crate::std::{collections::BTreeMap, vec::Vec};
 /// Error for PBFT consensus.
 #[derive(Debug, Clone)]
 pub enum Error {
-	// incase of primary failure, need to view change.
-	// NoPrePrepare,
-	/// No Primary message was received.
+	/// No Primary message was received. This indicate the failure of the primary.
+	/// The consensus need to elect a new leader. (view change)
 	PrimaryFailure,
+	/// Thers is not enough validators to perform a safe and live consensus.
+	/// The consensus (may) need to elect a new leader. (view change)
 	CommitNotEnough,
+	/// The incoming channel is closed for some reason. Failure of this node.
 	IncomingClosed,
 }
 
@@ -198,8 +200,9 @@ pub struct SignedCommit<N, D, S, Id> {
 	pub id: Id,
 }
 
+/// A PBFT consensus message.
 /// N: sequence number
-/// D: Digest of the block, that is header
+/// D: Digest of the block, aka block hash or header.
 #[derive(Clone, PartialEq, Eq)]
 #[cfg_attr(any(feature = "std", test), derive(Debug))]
 #[cfg_attr(feature = "derive-codec", derive(Encode, Decode, TypeInfo))]
@@ -223,6 +226,7 @@ impl<D, N: Copy> Message<N, D> {
 		}
 	}
 
+	/// Get the view of the vote.
 	pub fn view(&self) -> u64 {
 		match *self {
 			Message::PrePrepare(ref v) => v.view,
@@ -231,6 +235,7 @@ impl<D, N: Copy> Message<N, D> {
 		}
 	}
 
+	/// Get the sequence number of the vote.
 	pub fn seq(&self) -> u64 {
 		match *self {
 			Message::PrePrepare(ref v) => v.seq,
@@ -273,22 +278,25 @@ impl<N: Copy, D, S, Id> SignedMessage<N, D, S, Id> {
 		self.message.target()
 	}
 
+	/// Get the view of the vote.
 	pub fn view(&self) -> u64 {
 		self.message.view()
 	}
 
+	/// Get the sequence number of the vote.
 	pub fn seq(&self) -> u64 {
 		self.message.seq()
 	}
 }
 
+/// Convert from [`SignedCommit`] to [`SignedMessage`].
 impl<N: Copy, D, S, Id> From<SignedCommit<N, D, S, Id>> for SignedMessage<N, D, S, Id> {
 	fn from(sc: SignedCommit<N, D, S, Id>) -> Self {
 		SignedMessage { message: Message::Commit(sc.commit), signature: sc.signature, id: sc.id }
 	}
 }
-/// Authentication data for a set of many messages, currently a set of precommit signatures but
-/// in the future could be optimized with BLS signature aggregation.
+
+/// Authentication data for a set of many messages, currently a set of commit signatures
 pub type MultiAuthData<S, Id> = Vec<(S, Id)>;
 
 /// A commit message with compact representation of authenticationg data.
@@ -307,6 +315,7 @@ pub struct CompactCommit<D, N, S, Id> {
 	pub auth_data: MultiAuthData<S, Id>,
 }
 
+/// Convert from [`FinalizedCommit`] to [`CompactCommit`].
 impl<D: Clone, N: Clone, S, Id> From<FinalizedCommit<N, D, S, Id>> for CompactCommit<D, N, S, Id> {
 	fn from(commit: FinalizedCommit<N, D, S, Id>) -> Self {
 		CompactCommit {
@@ -318,6 +327,7 @@ impl<D: Clone, N: Clone, S, Id> From<FinalizedCommit<N, D, S, Id>> for CompactCo
 	}
 }
 
+/// Convert from [`CompactCommit`] to [`FinalizedCommit`].
 impl<D, N, S, Id> From<CompactCommit<D, N, S, Id>> for FinalizedCommit<N, D, S, Id> {
 	fn from(commit: CompactCommit<D, N, S, Id>) -> Self {
 		FinalizedCommit {
@@ -333,11 +343,10 @@ impl<D, N, S, Id> From<CompactCommit<D, N, S, Id>> for FinalizedCommit<N, D, S, 
 	}
 }
 
-/// A catch-up message, which is an aggregate of prevotes and precommits necessary
+/// A catch-up message, which is an aggregate of commits that necessary
 /// to complete a round.
 ///
-/// This message contains a "base", which is a block all of the vote-targets are
-/// a descendent of.
+/// the field "prepares","base_hash", "base_number" are not used currently.
 #[derive(Clone, PartialEq, Eq)]
 #[cfg_attr(any(feature = "std", test), derive(Debug))]
 #[cfg_attr(feature = "derive-codec", derive(Encode, Decode, TypeInfo))]
@@ -354,11 +363,14 @@ pub struct CatchUp<N, D, S, Id> {
 	pub base_number: N,
 }
 
+/// A view-change message.
 #[derive(Clone, PartialEq, Eq)]
 #[cfg_attr(any(feature = "std", test), derive(Debug))]
 #[cfg_attr(feature = "derive-codec", derive(Encode, Decode, TypeInfo))]
 pub struct ViewChange<Id> {
+	/// New view number we try to switch to.
 	pub new_view: u64,
+	/// Node id.
 	pub id: Id,
 }
 
@@ -405,30 +417,43 @@ where
 {
 }
 
-/// similar to: [`round::Round`]
+/// A struct that restore all the state of the consensus node.
+/// similar to: [`round::Round`].
 #[cfg_attr(any(feature = "std", test), derive(Debug))]
 pub(crate) struct Storage<N, D, S, Id: Eq + Ord> {
+	/// Sequence number in current view.
+	/// A pair of (view_number, sequence_number) can determine a unique consensus round.
 	seq: u64,
+	/// The finalized block in last round.
 	last_round_base: (N, D),
+	/// Current consensus state.
 	current_state: CurrentState,
+	/// The set of validators.
 	voters: VoterSet<Id>,
-	// from valid preprepare msg.
+	/// The target block we want to finalize in current round.
+	/// This target can be retrieved from valid preprepare msg.
 	target: Option<(N, D)>,
+	/// PREPREPARE messages in current round.
 	preprepare: BTreeMap<Id, (PrePrepare<N, D>, S)>,
+	/// PREPARE messages in current round.
 	prepare: BTreeMap<Id, (Prepare<N, D>, S)>,
+	/// COMMIT messages in current round.
 	commit: BTreeMap<Id, (Commit<N, D>, S)>,
-	// When voter run into prepare stage (and the following stage)
-	// `current_state` and seq should not be lift.
-	//
-	// Or we will enter commit stage with No other commit.
-	// node: seq = 18, stage = COMMIT
-	// <---- received --- PrePrepare(seq = 19) from other nodes.
-	// node: seq = 19, stage = COMMIT
-	//
-	// This will happen when a node catch up with others.
-	//
-	// So we should block.
+	/// Whether the node is trying to catch-up.
+	///
+	/// When voter run into prepare stage (and the following stage)
+	/// `current_state` and seq should not be lift.
+	///
+	/// Or we will enter commit stage with No other commit.
+	/// node: seq = 18, stage = COMMIT
+	/// <---- received --- PrePrepare(seq = 19) from other nodes.
+	/// node: seq = 19, stage = COMMIT
+	///
+	/// This will happen when a node catch up with others.
+	///
+	/// So we should block.
 	block_catch_up: bool,
+	/// Pending messages that are not yet processed (due to a catch-up).
 	pending_msg: Vec<(Id, Message<N, D>, S)>,
 }
 
@@ -470,20 +495,24 @@ where
 		}
 	}
 
+	/// If specified voter has sent a message in current round.
 	fn contains_key(&self, key: &Id) -> bool {
 		self.preprepare.contains_key(key) ||
 			self.prepare.contains_key(key) ||
 			self.commit.contains_key(key)
 	}
 
+	/// Get sequence number in current round.
 	fn seq(&self) -> u64 {
 		self.seq
 	}
 
+	/// Bump sequence number in current round.
 	fn bump_seq(&mut self) {
 		self.seq += 1;
 	}
 
+	/// Clear current round messages.
 	fn clear_votes(&mut self) {
 		self.preprepare.clear();
 		self.prepare.clear();
@@ -500,10 +529,13 @@ where
 		self.block_catch_up = false;
 	}
 
+	/// Set block_catch_up flag, which indicates whether the node should stop trying to catch-up.
 	fn block_catch_up(&mut self) {
 		self.block_catch_up = true;
 	}
 
+	/// Gnerate a commit indicate finalize the block.
+	///
 	/// Should be called only if current_state == Finalize
 	fn gen_f_commit(&self) -> Option<FinalizedCommit<N, H, S, Id>> {
 		if self.current_state == CurrentState::Finalize {
@@ -542,6 +574,7 @@ where
 	N: std::fmt::Debug + Clone + std::cmp::PartialEq + std::cmp::PartialOrd + Copy,
 	S: std::fmt::Debug + Clone,
 {
+	/// Get current block we are trying to finalize.
 	fn target(&self) -> Option<(&H, N)> {
 		self.target.as_ref().map(|(n, h)| (h, *n))
 	}
@@ -565,8 +598,10 @@ where
 		}
 	}
 
+	/// Save a message to storage.
 	fn save_message(&mut self, from: Id, message: Message<N, H>, signature: S) {
 		if message.seq() < self.seq() {
+			// Discard old message.
 			return
 		} else if message.seq() > self.seq() {
 			// Clean votes and target.
@@ -580,10 +615,13 @@ where
 		if self.seq == message.seq() && self.target().map_or(false, |t| t != message.target()) {
 			match message {
 				Message::PrePrepare(_) => {
+					// Receive different PREPREPARE message is acceptable.
+					// Only leader's PREPREPARE will be treated as valid.
 					#[cfg(feature = "std")]
 					log::debug!(target:"afp", "find a different target with same seq (PrePrepare). our: {:?}, theirs: {:?}", self.target(), message.target());
 				},
 				_ => {
+					// Otherwise, return with a warning.
 					#[cfg(feature = "std")]
 					log::warn!(target:"afp", "find a different target with same seq. our: {:?}, theirs: {:?}", self.target(), message.target());
 					return
@@ -616,11 +654,6 @@ where
 				log::trace!(target: "afp", "insert message to preprepare finish.");
 			},
 			Message::Prepare(msg) => {
-				// if let Some(target) = self.target.clone() {
-				// 	if msg.target_number != target.0 && msg.target_hash != target.1 {
-				// 		return
-				// 	}
-				// }
 				#[cfg(feature = "std")]
 				log::trace!(target: "afp", "insert message to Prepare, msg: {:?}", msg);
 				self.prepare.insert(from, (msg, signature));
@@ -632,11 +665,6 @@ where
 				}
 			},
 			Message::Commit(msg) => {
-				// if let Some(target) = self.target.clone() {
-				// 	if msg.target_number != target.0 && msg.target_hash != target.1 {
-				// 		return
-				// 	}
-				// }
 				#[cfg(feature = "std")]
 				log::trace!(target: "afp", "insert message to Commit, msg: {:?}", msg);
 				self.commit.insert(from, (msg, signature));
@@ -662,14 +690,17 @@ where
 		log::trace!(target: "afp", "=== end ===")
 	}
 
+	/// Count the number of PREPARE messages.
 	fn count_prepares(&self) -> usize {
 		self.prepare.len()
 	}
 
+	/// Count the number of COMMIT messages.
 	fn count_commits(&self) -> usize {
 		self.commit.len()
 	}
 
+	/// Check if the PREPREPARE message **from leader** exists.
 	fn validate_primary_preprepare(&self, view: u64) -> bool {
 		let primary = self.voters.get_primary(view);
 
@@ -677,10 +708,12 @@ where
 	}
 }
 
+/// A set of nodes valid to vote.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct VoterSet<Id: Eq + Ord> {
+	/// Voter's Id, with the same order as the vector in genesis block (or the following).
 	voters: Vec<Id>,
-	/// The required number threshold for supermajority.
+	/// The required threshold number for supermajority.
 	/// Normally, it's > 2/3.
 	threshold: usize,
 }
@@ -734,10 +767,12 @@ impl<Id: Eq + Ord + Clone> VoterSet<Id> {
 		self.voters.get(n)
 	}
 
+	/// Get a ref to voters.
 	pub fn voters(&self) -> &[Id] {
 		&self.voters
 	}
 
+	/// Get leader Id.
 	pub fn get_primary(&self, view: u64) -> Id {
 		self.voters.get(view as usize % self.voters.len()).cloned().unwrap()
 	}
@@ -765,6 +800,8 @@ impl<Id: Eq + Ord + Clone> VoterSet<Id> {
 
 /// Struct returned from `validate_commit` function with information
 /// about the validation result.
+///
+/// Stale code.
 pub struct CommitValidationResult<H, N> {
 	target: Option<(H, N)>,
 	num_commits: usize,
@@ -777,12 +814,12 @@ impl<H, N> CommitValidationResult<H, N> {
 		self.target.as_ref()
 	}
 
-	/// Returns the number of precommits in the commit.
+	/// Returns the number of commits in the commit.
 	pub fn num_commits(&self) -> usize {
 		self.num_commits
 	}
 
-	/// Returns the number of duplicate precommits in the commit.
+	/// Returns the number of duplicate commits in the commit.
 	pub fn num_duplicated_commits(&self) -> usize {
 		self.num_duplicated_commits
 	}

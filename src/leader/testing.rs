@@ -17,6 +17,7 @@ pub mod chain {
 		parent: Hash,
 	}
 
+	/// A blockchain structure.
 	#[derive(Debug)]
 	pub struct DummyChain {
 		inner: BTreeMap<Hash, BlockRecord>,
@@ -30,6 +31,7 @@ pub mod chain {
 			DummyChain { inner, finalized: (1, GENESIS_HASH) }
 		}
 
+		/// Add a chain to current chain.
 		pub fn push_blocks(&mut self, mut parent: Hash, blocks: &[Hash]) {
 			if blocks.is_empty() {
 				return
@@ -41,6 +43,7 @@ pub mod chain {
 			}
 		}
 
+		/// Add a block to current chain.
 		pub fn push_block(&mut self, parent: Hash, block: Hash) {
 			let block_number = self.inner.get(parent).unwrap().number + 1;
 			self.inner.insert(block, BlockRecord { number: block_number, parent });
@@ -61,6 +64,7 @@ pub mod chain {
 			Err(())
 		}
 
+		/// Finalized a block.
 		pub fn finalize_block(&mut self, block: Hash) -> bool {
 			#[cfg(feature = "std")]
 			log::trace!("finalize_block: {:?}", block);
@@ -117,13 +121,18 @@ pub mod environment {
 	/// Every node can send `Message` to the network, then it will be
 	/// wrapped in `SignedMessage` and broadcast to all other nodes.
 	struct BroadcastNetwork<M> {
+		/// Receiver from every peer on the network.
 		receiver: UnboundedReceiver<(Id, M)>,
+		/// Raw sender to give a new node join the network.
 		raw_sender: UnboundedSender<(Id, M)>,
-		/// Peer's handle to send messages to.
+		/// Peer's sender to send messages to.
 		senders: Vec<(Id, UnboundedSender<M>)>,
+		/// Broadcast history.
 		history: Vec<M>,
-		// TODO: IMPLEMENT THIS.
+		/// A validator hook is a hook to decide whether a message should be broadcast.
+		/// By default, all messages are broadcast.
 		validator_hook: Option<Box<dyn Fn(&M) -> () + Send + Sync>>,
+		/// A routing table that decide whether a message should be sent to a peer.
 		rule: Arc<Mutex<RoutingRule>>,
 	}
 
@@ -201,53 +210,16 @@ pub mod environment {
 			}
 		}
 
+		/// Broadcast a message to all peers.
 		pub fn send_message(&self, message: M) {
 			// TODO: id: `0` is not used.
 			let _ = self.raw_sender.unbounded_send((0, message));
 		}
 	}
 
-	// WIP
-	struct CollectorNetwork<M> {
-		receiver: UnboundedReceiver<M>,
-		raw_sender: UnboundedSender<M>,
-		history: Vec<M>,
-	}
-
-	impl<M: Clone> CollectorNetwork<M> {
-		fn new() -> Self {
-			let (tx, rx) = mpsc::unbounded();
-			CollectorNetwork { receiver: rx, raw_sender: tx, history: Vec::new() }
-		}
-
-		/// Add a node to network
-		fn add_node<N, F: Fn(N) -> M>(&mut self, f: F) -> impl Sink<N, Error = Error> {
-			let messages_out = self
-				.raw_sender
-				.clone()
-				.sink_map_err(|e| panic!("Error sending message: {:?}", e))
-				.with(move |message| std::future::ready(Ok(f(message))));
-
-			messages_out
-		}
-
-		fn route(&mut self, cx: &mut Context) -> Poll<()> {
-			loop {
-				// Receive item from receiver
-				match Pin::new(&mut self.receiver).poll_next(cx) {
-					// While have message
-					Poll::Ready(Some(msg)) => {
-						self.history.push(msg.clone());
-					},
-					Poll::Pending => return Poll::Pending,
-					Poll::Ready(None) => return Poll::Ready(()),
-				}
-			}
-		}
-	}
-
-	// type LogNetwork = CollectorNetwork<report::Log<&'static str, Id>>;
+	/// Network for a round.
 	type RoundNetwork = BroadcastNetwork<SignedMessage<BlockNumber, Hash, Signature, Id>>;
+	/// Global Network.
 	type GlobalMessageNetwork = BroadcastNetwork<GlobalMessageIn<Hash, BlockNumber, Signature, Id>>;
 
 	pub(crate) fn make_network() -> (Network, NetworkRouting) {
@@ -255,13 +227,14 @@ pub mod environment {
 
 		let rounds = Arc::new(Mutex::new(HashMap::new()));
 		let global = Arc::new(Mutex::new(GlobalMessageNetwork::new(rule.clone())));
-		// let log_collector = Arc::new(Mutex::new(CollectorNetwork::new()));
 		(
 			Network { rounds: rounds.clone(), global: global.clone(), rule: rule.clone() },
 			NetworkRouting { rounds, global, rule },
 		)
 	}
 
+	/// State of a voter.
+	/// Used to pass to the [`Rule`] hook.
 	#[derive(Default, Copy, Clone)]
 	pub(crate) struct VoterState {
 		pub(crate) last_finalized: BlockNumber,
@@ -274,15 +247,18 @@ pub mod environment {
 		}
 	}
 
-	// type Rule = fn(Id, &VoterState, Id, &VoterState) -> bool;
+	/// Rule type for routing table.
 	type Rule = Box<dyn Send + Fn(&Id, &VoterState, &Id, &VoterState) -> bool>;
 
+	/// Routing table.
 	#[derive(Default)]
 	pub(crate) struct RoutingRule {
+		/// All peers in the network, same as VoterSet.
 		nodes: Vec<Id>,
-		// TODO: find a way to update state.
+		/// Track all peers' state.
 		state_tracker: HashMap<Id, VoterState>,
-		// TODO: DOC
+		/// Rule for routing.
+		/// By default, all messages are broadcast.
 		rules: Vec<Rule>,
 	}
 
@@ -295,10 +271,12 @@ pub mod environment {
 			self.rules.push(rule);
 		}
 
+		/// Update peer's state.
 		pub fn update_state(&mut self, id: Id, state: VoterState) {
 			self.state_tracker.insert(id, state);
 		}
 
+		/// Check if a message is valid to route.
 		pub fn valid_route(&mut self, from: &Id, to: &Id) -> bool {
 			match (self.state_tracker.get(from), self.state_tracker.get(to)) {
 				(Some(_), None) => {
@@ -319,6 +297,7 @@ pub mod environment {
 			self.rules.iter().map(|rule| rule(from, from_state, to, to_state)).all(|v| v)
 		}
 
+		/// A preset rule to isolate a peer from others.
 		pub fn isolate(&mut self, node: Id) {
 			let _isolate =
 				move |from: &Id, _from_state: &VoterState, to: &Id, _to_state: &VoterState| {
@@ -327,6 +306,7 @@ pub mod environment {
 			self.add_rule(Box::new(_isolate));
 		}
 
+		/// A preset rule to isolate a peer from others after required block height.
 		pub fn isolate_after(&mut self, node: Id, after: BlockNumber) {
 			let _isolate_after =
 				move |from: &Id, from_state: &VoterState, to: &Id, to_state: &VoterState| {
@@ -339,9 +319,11 @@ pub mod environment {
 
 	/// the network routing task.
 	pub struct NetworkRouting {
-		/// Key: view/round number, Value: RoundNetwork
+		/// Key: view number, Value: RoundNetwork
 		rounds: Arc<Mutex<HashMap<u64, RoundNetwork>>>,
+		/// Global message network.
 		global: Arc<Mutex<GlobalMessageNetwork>>,
+		/// Routing rule.
 		pub(crate) rule: Arc<Mutex<RoutingRule>>,
 	}
 
@@ -391,17 +373,17 @@ pub mod environment {
 			Poll::Pending
 		}
 	}
+
 	/// A test network. Instantiate this with `make_network`,
 	#[derive(Clone)]
 	pub struct Network {
-		/// Network for the round.
 		rounds: Arc<Mutex<HashMap<u64, RoundNetwork>>>,
 		global: Arc<Mutex<GlobalMessageNetwork>>,
-		rule: Arc<Mutex<RoutingRule>>, // Log collector
-		                               // log_collector: Arc<Mutex<LogNetwork>>,
+		rule: Arc<Mutex<RoutingRule>>,
 	}
 
 	impl Network {
+		/// Initialize a round network.
 		pub fn make_round_comms(
 			&self,
 			view_number: u64,
@@ -411,10 +393,6 @@ pub mod environment {
 			impl Sink<Message<BlockNumber, Hash>, Error = Error>,
 		) {
 			log::trace!("make_round_comms, view_number: {}, node_id: {}", view_number, node_id);
-			// let log_sender = self
-			// 	.log_collector
-			// 	.lock()
-			// 	.add_node(move |log| report::Log { id: node_id.clone(), state: log });
 			let mut rounds = self.rounds.lock();
 			let round_comm = rounds
 				.entry(view_number)
@@ -434,6 +412,7 @@ pub mod environment {
 			round_comm
 		}
 
+		/// Initialize the global network.
 		pub fn make_global_comms(
 			&self,
 			id: Id,
@@ -463,6 +442,7 @@ pub mod environment {
 		}
 	}
 
+	/// A implementation of `Environment`.
 	pub struct DummyEnvironment {
 		local_id: Id,
 		network: Network,
@@ -570,7 +550,7 @@ pub mod environment {
 			_base: (Self::Number, Self::Hash),
 			_f_commit: FinalizedCommit<Self::Number, Self::Hash, Self::Signature, Self::Id>,
 		) -> Result<(), Self::Error> {
-            Ok(())
+			Ok(())
 		}
 	}
 }
