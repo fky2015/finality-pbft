@@ -44,7 +44,7 @@ pub mod chain {
 
 		pub fn push_blocks(&mut self, mut parent: &'static str, blocks: &[&'static str]) {
 			if blocks.is_empty() {
-				return;
+				return
 			}
 
 			let base_number = self.inner.get(parent).unwrap().number + 1;
@@ -92,15 +92,15 @@ pub mod chain {
 				// leaves are in descending order.
 				let leaf_number = self.inner.get(leaf).unwrap().number;
 				if leaf_number < base_number {
-					break;
+					break
 				}
 
 				if leaf == &base {
-					return Some((leaf, leaf_number));
+					return Some((leaf, leaf_number))
 				}
 
 				if let Ok(_) = self.ancestry(base, leaf) {
-					return Some((leaf, leaf_number));
+					return Some((leaf, leaf_number))
 				}
 			}
 
@@ -125,10 +125,10 @@ pub mod chain {
 				}
 
 				if block == NULL_HASH {
-					return Err(Error::NotDescendent);
+					return Err(Error::NotDescendent)
 				}
 				if block == base {
-					break;
+					break
 				}
 
 				ancestry.push(block);
@@ -467,9 +467,8 @@ pub mod environment {
 		) {
 			let mut global_messages = self.global_messages.lock();
 			global_messages.add_node(|message| match message {
-				CommunicationOut::Commit(r, commit) => {
-					CommunicationIn::Commit(r, commit.into(), Callback::Blank)
-				},
+				CommunicationOut::Commit(r, commit) =>
+					CommunicationIn::Commit(r, commit.into(), Callback::Blank),
 			})
 		}
 

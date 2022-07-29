@@ -720,7 +720,7 @@ where
 					} else {
 						process_catch_up_outcome
 							.run(CatchUpProcessingOutcome::Bad(BadCatchUp::new()));
-						return Ok(());
+						return Ok(())
 					};
 
 					let state = round.state();
@@ -793,7 +793,7 @@ where
 			};
 
 			if !should_start_next {
-				return Poll::Pending;
+				return Poll::Pending
 			}
 
 			trace!(target: "afg", "Best round at {} has become completable. Starting new best round at {}",
@@ -838,7 +838,7 @@ where
 		let last_finalized_number = &mut self.last_finalized_number;
 		if finalized_number > *last_finalized_number {
 			*last_finalized_number = finalized_number;
-			return true;
+			return true
 		}
 		false
 	}
@@ -972,7 +972,7 @@ where
 		trace!(target: "afg", "Ignoring because best round number is {}",
 			   best_round_number);
 
-		return None;
+		return None
 	}
 
 	// check threshold support in prevotes and precommits.
@@ -986,7 +986,7 @@ where
 					   prevote.id,
 				);
 
-				return None;
+				return None
 			}
 
 			map.entry(prevote.id.clone()).or_insert((false, false)).0 = true;
@@ -999,7 +999,7 @@ where
 					   precommit.id,
 				);
 
-				return None;
+				return None
 			}
 
 			map.entry(precommit.id.clone()).or_insert((false, false)).1 = true;
@@ -1028,7 +1028,7 @@ where
 				   "Ignoring invalid catch up, missing voter threshold"
 			);
 
-			return None;
+			return None
 		}
 	}
 
@@ -1048,7 +1048,7 @@ where
 					   e,
 				);
 
-				return None;
+				return None
 			},
 		}
 	}
@@ -1063,14 +1063,14 @@ where
 					   e,
 				);
 
-				return None;
+				return None
 			},
 		}
 	}
 
 	let state = round.state();
 	if !state.completable {
-		return None;
+		return None
 	}
 
 	Some(round)

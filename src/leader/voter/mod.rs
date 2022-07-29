@@ -363,7 +363,7 @@ where
 	}
 
 	/// Init a new view.
-	pub fn new_view_round(&self) -> ViewRound<E> {
+	fn new_view_round(&self) -> ViewRound<E> {
 		let voter_set = self.voters.clone();
 		ViewRound::new(
 			self.current_view_number,
