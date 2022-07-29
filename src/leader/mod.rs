@@ -391,6 +391,8 @@ pub enum CurrentState {
 	Commit,
 	/// FinalizedCommit
 	Finalize,
+	/// View Change
+	ViewChange,
 }
 
 /// Arithmetic necessary for a block number.

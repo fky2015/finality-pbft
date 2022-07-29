@@ -409,6 +409,9 @@ where
 	/// Change view. PBFT implementation.
 	pub async fn change_view(&mut self) -> Result<u64, E::Error> {
 		const DELAY_VIEW_CHANGE_WAIT: u64 = 500;
+
+		self.inner.lock().best_view.message_log.lock().current_state = CurrentState::ViewChange;
+
 		let new_view = self.current_view_number + 1;
 		loop {
 			log::info!(target: "afp", "id: {:?}, start view_change: {new_view}", self.local_id);
@@ -443,6 +446,9 @@ where
 				// TODO: maybe not prune those who higher than new_view.
 				self.peer_view.lock().prune();
 				log::info!(target: "afp", "id: {:?}, successfully view_change: {:?}", self.local_id, new_view_info);
+
+				self.inner.lock().best_view.message_log.lock().current_state =
+					CurrentState::PrePrepare;
 				return Ok(new_view_info.0)
 			}
 		}
