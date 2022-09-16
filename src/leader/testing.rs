@@ -611,7 +611,7 @@ mod test {
 	}
 
 	#[test]
-	#[ntest::timeout(1000)]
+	// #[ntest::timeout(1000)]
 	fn routing_rule_allow_all_in_default() {
 		let (network, routing_network) = make_network();
 		let nodes = 0..2;

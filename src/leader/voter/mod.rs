@@ -877,7 +877,9 @@ where
 			let log = self.message_log.clone();
 			let mut timeout = Delay::new(Duration::from_millis(DELAY_PRE_PREPARE_MILLI));
 			let timeout_wait = futures::future::poll_fn(|cx| {
-				if log.lock().current_state == CurrentState::PrePrepare {
+				let mut log = log.lock();
+				if log.current_state == CurrentState::PrePrepare {
+					log.waker = Some(cx.waker().clone());
 					timeout.poll_unpin(cx)
 				} else {
 					Poll::Ready(())
@@ -911,7 +913,9 @@ where
 			let log = self.message_log.clone();
 			let mut timeout = Delay::new(Duration::from_millis(DELAY_PREPARE_MILLI));
 			let timeout_wait = futures::future::poll_fn(|cx| {
-				if log.lock().current_state == CurrentState::Prepare {
+				let mut log = log.lock();
+				if log.current_state == CurrentState::Prepare {
+					log.waker = Some(cx.waker().clone());
 					timeout.poll_unpin(cx)
 				} else {
 					Poll::Ready(())
@@ -945,7 +949,9 @@ where
 			let log = self.message_log.clone();
 			let mut timeout = Delay::new(Duration::from_millis(DELAY_COMMIT_MILLI));
 			let timeout_wait = futures::future::poll_fn(|cx| {
-				if log.lock().current_state == CurrentState::Commit {
+				let mut log = log.lock();
+				if log.current_state == CurrentState::Commit {
+					log.waker = Some(cx.waker().clone());
 					timeout.poll_unpin(cx)
 				} else {
 					Poll::Ready(())

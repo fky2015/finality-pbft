@@ -9,7 +9,7 @@ extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
 
-use std::num::NonZeroUsize;
+use std::{num::NonZeroUsize, task};
 
 #[cfg(feature = "derive-codec")]
 use parity_scale_codec::{Decode, Encode};
@@ -457,6 +457,8 @@ pub(crate) struct Storage<N, D, S, Id: Eq + Ord> {
 	block_catch_up: bool,
 	/// Pending messages that are not yet processed (due to a catch-up).
 	pending_msg: Vec<(Id, Message<N, D>, S)>,
+	/// A handle to wake up the logic future.
+	waker: Option<task::Waker>,
 }
 
 /// State of the view. Generate by [`Storage`].
@@ -494,6 +496,7 @@ where
 			commit: Default::default(),
 			block_catch_up: false,
 			pending_msg: Vec::new(),
+            waker: None,
 		}
 	}
 
@@ -591,13 +594,13 @@ where
 	fn save_message_with_block(&mut self, from: Id, message: Message<N, H>, signature: S) {
 		if self.block_catch_up && message.seq() > self.seq() {
 			self.pending_msg.push((from, message, signature));
-			return
 		} else {
 			while let Some((from, msg, sig)) = self.pending_msg.pop() {
 				self.save_message(from, msg, sig);
 			}
-			self.save_message(from, message, signature)
+			self.save_message(from, message, signature);
 		}
+		self.waker.take().map(|w| w.wake());
 	}
 
 	/// Save a message to storage.
