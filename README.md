@@ -2,6 +2,8 @@
 
 **Please keep in mind that this is a POC (Proof of Concept) work that should be refined further before being put into production.**
 
+**The `src/leader/` folder contain the entire source code.**
+
 > pBFT (Practical Byzantine Fault Tolerance) is a consensus algorithm introduced in the late 90s by Barbara Liskov and Miguel Castro.
 
 finality-pbft is a finality gadget for [substrate][substrate], written in Rust and uses `async/await`.
@@ -34,7 +36,7 @@ This codebase takes a lot of inspiration from [finality-grandpa][substrate-final
 git clone https://github.com/fky2015/finality-pbft
 cd finality-pbft
 cargo build
-cargo test
+cargo test leader
 ```
 
 ## Usage
