@@ -1472,8 +1472,10 @@ mod tests {
 
 		pool.run_until(caught_up.then(|_| finalized));
 
+        let mut best_view = voter_state.get().best_view.clone();
+        best_view.1.prepare_ids = Default::default();
 		assert_eq!(
-			voter_state.get().best_view,
+			best_view,
 			(
 				3,
 				crate::leader::voter::report::ViewState::<Hash, Id> {
