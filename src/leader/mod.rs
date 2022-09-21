@@ -9,7 +9,7 @@ extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
 
-use std::{num::NonZeroUsize, task};
+use std::{num::NonZeroUsize, task::Waker};
 
 #[cfg(feature = "derive-codec")]
 use parity_scale_codec::{Decode, Encode};
@@ -22,6 +22,10 @@ mod std {
 
 	pub mod vec {
 		pub use alloc::vec::Vec;
+	}
+
+	pub mod task {
+		pub use futures::task::Waker;
 	}
 
 	pub mod collections {
@@ -458,7 +462,7 @@ pub(crate) struct Storage<N, D, S, Id: Eq + Ord> {
 	/// Pending messages that are not yet processed (due to a catch-up).
 	pending_msg: Vec<(Id, Message<N, D>, S)>,
 	/// A handle to wake up the logic future.
-	waker: Option<task::Waker>,
+	waker: Option<Waker>,
 }
 
 /// State of the view. Generate by [`Storage`].
@@ -496,7 +500,7 @@ where
 			commit: Default::default(),
 			block_catch_up: false,
 			pending_msg: Vec::new(),
-            waker: None,
+			waker: None,
 		}
 	}
 
